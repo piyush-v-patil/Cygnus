@@ -1,0 +1,9 @@
+# Answer bank: answers for questions Simplify does not cover. It grows by itself
+# from the Needs-input lane; you can also add entries by hand. Matching is exact
+# on the normalized question (lowercase, no punctuation, no trailing "*").
+- question: "are you willing to work onsite 5 days a week"
+  original: "Are you willing to work onsite 5 days a week?"
+  kind: yes_no            # yes_no | choice | number | short_text | long_text
+  answer: "Yes"
+  added: 2026-10-21
+  source: user            # user | wizard

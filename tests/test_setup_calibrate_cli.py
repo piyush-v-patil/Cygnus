@@ -168,3 +168,12 @@ def test_cli_bad_profile(tmp_path, capsys):
 
 def test_fixture_paths_exist():
     assert (FIXTURES / "jobs.json").exists() and (FIXTURES / "forms" / "greenhouse.html").exists()
+
+
+def test_config_example_profile_is_valid():
+    import yaml
+    from autoapply.config import Profile
+    root = Path(__file__).parent.parent / "config.example"
+    Profile.model_validate(yaml.safe_load((root / "profile.yaml").read_text()))
+    from autoapply.config import AnswerBank
+    assert AnswerBank(root / "answers.yaml").items[0].kind == "yes_no"

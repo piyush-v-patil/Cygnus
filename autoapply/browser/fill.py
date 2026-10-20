@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 CAPTCHA_CHALLENGE = ("iframe[src*='hcaptcha.com'][src*='challenge'], iframe[title*='challenge' i], "
                      "iframe[src*='recaptcha/api2/bframe'], iframe[src*='turnstile']")
 LOGIN_WALL = "input[type=password]"
+OPTION_CAP = 200
 
 
 class Stuck(Exception):
@@ -251,7 +252,10 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
             continue
         if f.kind == "combobox" and not f.options:
             f.options = await combobox_options(page, f)
-        banked = ctx.answers.lookup(f.label, f.answer_kind, f.options or None)
+        # a capped option list (School: thousands) is not a complete list to match against;
+        # the combobox fill types the answer and fails loudly if no option matches
+        truncated = len(f.options) >= OPTION_CAP
+        banked = ctx.answers.lookup(f.label, f.answer_kind, None if truncated else (f.options or None))
         if banked is not None:
             if await _try_fill(page, f, banked, missing):
                 plan.append(PlanEntry(f.key, f.label, f.kind, banked, "answer_bank", f.required, f.options))
@@ -284,8 +288,17 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
                                       evidence=v.get("evidence"), facts_used=v.get("facts_used") or [],
                                       claude_kind=v["kind"]))
 
-    # final read: any required field still empty that nobody claimed is missing too
+    # final read: a value the page did not keep, or a required field nobody claimed, is missing
     final = await enumerate_fields(page, hints)
+    by_key = {f.key: f for f in final}
+    for p in list(plan):
+        f = by_key.get(p.key)
+        if p.source in ("answer_bank", "claude") and f is not None and f.empty:
+            plan.remove(p)
+            if f.required:
+                m = _missing(f, "the form did not keep the answer")
+                m["suggested"] = p.value if isinstance(p.value, str) else None
+                missing.append(m)
     claimed = {m["key"] for m in missing} | {p.key for p in plan}
     for f in final:
         if f.required and f.empty and f.visible and f.key not in claimed and f.kind != "file":

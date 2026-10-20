@@ -1,0 +1,70 @@
+# Cygnus / AutoApply profile - copy to %USERPROFILE%\.autoapply\profile.yaml
+# (or let `autoapply setup` write it). Every value here is yours to edit.
+
+sources:
+  - type: jobmonitor                 # your fork: read + optional write-back
+    repo: Piyush-v-patil/job-monitor # owner/repo
+    branch: main
+    tracker: software                # only "software" in v1
+    writeback: true                  # needs GITHUB_TOKEN with Contents: read and write
+  # - type: jobmonitor_public        # someone else's public tracker, read-only
+  #   repo: someone/job-monitor
+  # - type: csv                      # columns: url (required), company, title, location
+  #   path: C:\Users\me\jobs.csv     # a plain list of URLs, one per line, also works
+
+filters:
+  tiers: [newgrad, experienced]      # intern | newgrad | experienced
+  roles: [software, backend, fullstack, frontend, ml-ai, data]
+  location: us_or_remote             # us_or_remote | metros | remote_only
+  metros: []                         # used when location: metros, e.g. [Seattle, Austin]
+  ats_allowed: [greenhouse, ashby, lever]
+  per_company_cap: null              # null = no cap
+
+visa:
+  status: opt_stem_opt               # citizen_gc | opt_stem_opt | needs_sponsorship_now
+  needs_sponsorship_future: true
+  sponsor_filter: skip_no_record     # skip_no_record | known_filers_only | off
+  skip_us_person_roles: true         # skip citizenship / US-person / clearance roles
+  confirmed: false                   # the wizard sets this only after you confirm the above
+
+fit:
+  cutoff: 65                         # 0-100; `autoapply calibrate` suggests a value
+  order: newest_first
+
+resumes:                             # role family -> PDF in resumes/
+  default: general.pdf
+  map:
+    backend: backend.pdf
+    ml-ai: ml.pdf
+    data: ml.pdf
+    fullstack: fullstack.pdf
+    frontend: fullstack.pdf
+
+browser:
+  parallel_tabs: 3
+  headless: false                    # must stay false in v1
+  # executable_path: null            # only to override Playwright's bundled Chromium
+
+llm:
+  score_model: claude-haiku-5-5
+  write_model: claude-sonnet-5-5
+  monthly_budget_usd: 20
+  server_fallback: true              # retry a declined write call on a fallback model
+  pricing: {}                        # $/million tokens. Empty uses the built-in table
+  #  claude-haiku-5-5:  {input: 0.10, output: 0.50}   (published 2026-10; VERIFY current prices)
+  #  claude-sonnet-5-5: {input: 2.00, output: 10.00}
+
+schedule:
+  mode: daily                        # manual | daily | twice_daily
+  times: ["08:00"]                   # local time; two entries for twice_daily
+
+notifications:
+  discord: true
+  needs_input_ping: immediate        # immediate | summary_only
+  ping_group_threshold: 5            # above this many in one run, pings are grouped
+
+testing:
+  never_submit: false                # true = full pipeline, Submit is never clicked
+
+review:
+  port: 8765
