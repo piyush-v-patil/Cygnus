@@ -83,16 +83,17 @@
     if (c && c.querySelector(".required, [class*=_required], .asterisk")) return true;
     return false;
   };
+  // react-select keeps the chosen value in a sibling branch, a few levels up
   const comboValue = (el) => {
-    const c = el.closest(".select__container, .select-shell, [class*=select], [class*=autocomplete]") || el.parentElement;
-    const sv = c && c.querySelector("[class*=single-value], [class*=singleValue], [class*=multi-value__label]");
-    if (sv && norm(sv.textContent)) {
-      return norm([...c.querySelectorAll("[class*=single-value], [class*=singleValue], [class*=multi-value__label]")]
-        .map((x) => x.textContent).join("; "));
+    const SV = "[class*=single-value], [class*=singleValue], [class*=multi-value__label]";
+    let c = el.parentElement;
+    for (let i = 0; c && i < 6; i++, c = c.parentElement) {
+      const vals = [...c.querySelectorAll(SV)].filter((x) => norm(x.textContent));
+      if (vals.length) return norm(vals.map((x) => x.textContent).join("; "));
+      if (c.matches(groupSel)) break;
     }
     return norm(el.value);
   };
-
   const used = new Map();
   const mkKey = (base) => {
     const n = (used.get(base) || 0) + 1;

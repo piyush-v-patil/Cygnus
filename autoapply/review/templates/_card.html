@@ -1,0 +1,48 @@
+{% set a = c.app %}{% set p = c.p %}
+<div class="card" id="app{{a.id}}">
+  <h2>{{p.company}} — {{p.title}}</h2>
+  <div class="meta">{{p.location or 'location n/a'}} · posted {{p.posted_at or p.first_seen or '?'}}
+    · <a href="{{p.apply_url}}" target="_blank" rel="noreferrer">posting</a>
+    {% if c.score %} · fit <span class="score">{{c.score.score}}</span>{% endif %}
+    · resume <b>{{a.resume_file or '—'}}</b>
+    {% if lane == 'needs_input' %} · waiting {{c.waited}}{% endif %}</div>
+  {% if c.score and c.score.reasons %}<div class="reasons">{{ c.score.reasons|join(' · ') }}</div>{% endif %}
+  {% if a.stuck_reason %}<div class="stuck">Stuck: {{a.stuck_reason}}</div>{% endif %}
+  {% if lane == 'needs_input' and c.missing %}
+  <form method="post" action="/app/{{a.id}}/answers">
+    <input type="hidden" name="csrf" value="{{csrf}}">
+    {% for m in c.missing %}<div class="q"><label>{{m.label}} <span class="why">({{m.reason}})</span></label>
+      {% set n = 'a__' ~ m.key %}
+      {% if m.kind == 'checkbox_group' %}{% for o in m.options %}<label style="font-weight:400"><input type="checkbox" name="{{n}}" value="{{o}}"> {{o}}</label>{% endfor %}
+      {% elif m.options %}<select name="{{n}}"><option value="">— choose —</option>{% for o in m.options %}<option>{{o}}</option>{% endfor %}</select>
+      {% elif m.answer_kind == 'yes_no' %}<select name="{{n}}"><option value="">— choose —</option><option>Yes</option><option>No</option></select>
+      {% elif m.answer_kind == 'long_text' %}<textarea name="{{n}}">{{m.suggested or ''}}</textarea>
+      {% elif m.answer_kind == 'number' %}<input type="number" name="{{n}}">
+      {% else %}<input type="text" name="{{n}}" value="{{m.suggested or ''}}">{% endif %}
+    </div>{% endfor %}
+    <div class="actions"><button name="then" value="save">Save answers</button>
+      <button class="primary" name="then" value="submit">Save &amp; approve &amp; submit</button></div>
+  </form>{% endif %}
+  <details {% if lane == 'ready' %}open{% endif %}><summary>{{c.plan|length}} filled fields</summary>
+  <table><tr><th>Field</th><th>Value</th><th>From</th></tr>
+  {% for e in c.plan %}<tr><td>{{e.label}}{% if e.required and (e.label|trim)[-1:] not in '*✱' %} *{% endif %}</td>
+    <td><div class="val">{{ e.value if e.value is string else e.value|join('; ') }}</div>
+      {% if e.evidence %}<div class="ev">resume: “{{e.evidence}}”</div>{% endif %}
+      {% if e.facts_used %}<div class="ev">facts used: {{e.facts_used|join('; ')}}</div>{% endif %}</td>
+    <td><span class="chip {{e.source}}">{{source_label.get(e.source, e.source)}}</span></td></tr>{% endfor %}
+  </table></details>
+  {% if a.screenshot_path %}<details class="shot"><summary>screenshot</summary><a href="/app/{{a.id}}/screenshot" target="_blank"><img loading="lazy" src="/app/{{a.id}}/screenshot" alt="form screenshot"></a></details>{% endif %}
+  <div class="actions">
+    {% if lane == 'ready' %}
+      <form class="inline" method="post" action="/app/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="primary">Approve &amp; submit</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>Open form</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="danger">Reject</button></form>
+    {% elif lane == 'needs_input' %}
+      <form class="inline" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button class="danger">Reject</button></form>
+    {% elif lane == 'stuck' %}
+      <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button class="primary">Open form</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/manual"><input type="hidden" name="csrf" value="{{csrf}}"><button>I submitted it</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/giveup"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Give up</button></form>
+    {% endif %}
+  </div>
+</div>

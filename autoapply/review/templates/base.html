@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cygnus review</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2329;--muted:#5d6872;--line:#dde2e7;--accent:#1f6feb;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;
+--chip-simplify:#e3f2fd;--chip-claude:#f3e8ff;--chip-user:#e6f4ea;--chip-bank:#fff4e5;--chip-resume:#eef1f4}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1419;--card:#171d24;--text:#e6e9ec;--muted:#98a3ad;--line:#2b333c;--accent:#4d94ff;
+--chip-simplify:#11324d;--chip-claude:#33204d;--chip-user:#163a24;--chip-bank:#4a3412;--chip-resume:#242b33}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+header{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0 8px 0 0}nav a{color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:6px}
+nav a.on{background:var(--bg);color:var(--text);font-weight:600}.badge{display:inline-block;min-width:20px;padding:0 6px;border-radius:10px;background:var(--line);text-align:center;font-size:12px;margin-left:4px}
+.spend{margin-left:auto;color:var(--muted)}.test{background:var(--warn);color:#fff;padding:2px 8px;border-radius:6px;font-size:12px}
+a{color:var(--accent)}main{max-width:1100px;margin:0 auto;padding:16px}.flash{background:var(--card);border-left:4px solid var(--accent);padding:10px 12px;margin-bottom:14px;word-break:break-word}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:16px;margin:0}.meta{color:var(--muted);font-size:13px;margin:2px 0 8px}.score{font-weight:700}
+.reasons{margin:4px 0 8px;color:var(--muted)}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-top:1px solid var(--line);padding:5px 6px;vertical-align:top;text-align:left}
+th{color:var(--muted);font-weight:500}.val{white-space:pre-wrap;word-break:break-word;max-width:520px}
+.chip{display:inline-block;padding:1px 7px;border-radius:9px;font-size:12px;white-space:nowrap}
+.chip.simplify{background:var(--chip-simplify)}.chip.claude,.chip.cover_letter{background:var(--chip-claude)}.chip.user{background:var(--chip-user)}
+.chip.answer_bank{background:var(--chip-bank)}.chip.resume{background:var(--chip-resume)}.ev{color:var(--muted);font-size:12px;margin-top:2px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}button{font:inherit;padding:7px 12px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--bad)}
+.q{margin:10px 0}.q label{display:block;font-weight:600;margin-bottom:4px}.q .why{color:var(--muted);font-weight:400;font-size:12px}
+input[type=text],input[type=number],textarea,select{width:100%;max-width:640px;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);font:inherit}
+textarea{min-height:90px}.shot img{max-width:100%;max-height:340px;border:1px solid var(--line);border-radius:6px;margin-top:8px}
+details summary{cursor:pointer;color:var(--muted);margin-top:6px}.stuck{color:var(--bad);font-weight:600}
+.empty{color:var(--muted);text-align:center;padding:40px}form.inline{display:inline}
+@media (max-width:640px){header{gap:8px}.spend{margin-left:0;width:100%}}
+</style></head><body>
+<header><h1>Cygnus review</h1>
+<nav>{% for l in ['ready','needs_input','stuck'] %}<a href="/lane/{{l}}" class="{{'on' if lane==l}}">{{lane_titles[l]}}<span class="badge">{{counts[l]}}</span></a>{% endfor %}
+<a href="/history" class="{{'on' if lane=='history'}}">History</a></nav>
+{% if test_mode %}<span class="test">TEST MODE — nothing is submitted</span>{% endif %}
+<span class="spend">Spend this month: <b>${{ '%.2f' % spend }}</b> of ${{ '%.2f' % budget }}</span></header>
+<main>{% if flash %}<div class="flash">{{flash}}</div>{% endif %}{% block body %}{% endblock %}</main>
+</body></html>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block body %}
+<form method="get" action="/history" style="margin-bottom:14px"><input type="text" name="q" value="{{q}}" placeholder="Search by company"></form>
+{% for c in cards %}{% set a = c.app %}{% set p = c.p %}
+<div class="card"><h2>{{p.company}} — {{p.title}}</h2>
+  <div class="meta">{{c.state}} · {{a.submitted_at or a.updated_at}} · resume {{a.resume_file}}{% if c.score %} · fit {{c.score.score}}{% endif %}
+   · <a href="{{p.apply_url}}" target="_blank" rel="noreferrer">posting</a></div>
+  {% if a.submission_dir %}<div class="actions">
+    <a href="/app/{{a.id}}/file/form.png" target="_blank">form.png</a> · <a href="/app/{{a.id}}/file/after_submit.png" target="_blank">after_submit.png</a>
+    · <a href="/app/{{a.id}}/file/fields.json" target="_blank">fields.json</a> · <a href="/app/{{a.id}}/file/meta.json" target="_blank">meta.json</a>
+    · <a href="/app/{{a.id}}/file/job.txt" target="_blank">job.txt</a></div>
+  <div class="meta">Saved in {{a.submission_dir}}</div>{% endif %}
+</div>{% else %}<div class="empty">No submitted applications{% if q %} for “{{q}}”{% endif %}.</div>{% endfor %}
+{% endblock %}
