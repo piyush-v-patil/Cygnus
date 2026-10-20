@@ -1,0 +1,30 @@
+{
+ "version": "t",
+ "companies": {
+  "Acme": {
+   "filed": 12,
+   "cert": 10,
+   "confidence": "exact",
+   "staffing": false,
+   "last": 2026,
+   "matched": "Acme Inc"
+  },
+  "Beta": {
+   "filed": 3,
+   "cert": 3,
+   "confidence": "exact",
+   "staffing": false,
+   "last": 2025,
+   "matched": "Beta LLC"
+  },
+  "NoFilings Inc": {
+   "filed": 0,
+   "cert": 0,
+   "confidence": "exact",
+   "staffing": false,
+   "last": 2020,
+   "matched": "NoFilings"
+  },
+  "Theta": null
+ }
+}

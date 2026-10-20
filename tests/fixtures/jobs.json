@@ -1,0 +1,153 @@
+{
+ "jobs": {
+  "acme:000000000001": {
+   "company": "Acme",
+   "first_seen": "2026-10-18",
+   "location": "San Francisco, CA",
+   "posted_at": "2026-10-18",
+   "role": "backend",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Backend Engineer",
+   "url": "https://job-boards.greenhouse.io/acme/jobs/1001"
+  },
+  "acme:000000000002": {
+   "company": "Acme",
+   "employer_url": "https://boards.greenhouse.io/acme/jobs/1001?gh_src=abc",
+   "first_seen": "2026-10-18",
+   "location": "San Francisco, CA",
+   "role": "backend",
+   "source": "simplify-github",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Backend Engineer (dup via simplify)",
+   "url": "https://simplify.jobs/p/xyz"
+  },
+  "air:000000000013": {
+   "company": "Airbnb",
+   "first_seen": "2026-10-16",
+   "location": "Seattle, WA",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://careers.airbnb.com/positions/7826337?gh_jid=7826337"
+  },
+  "applied:0000000011": {
+   "company": "Iota",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "applied",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://job-boards.greenhouse.io/iota/jobs/6006"
+  },
+  "beta:000000000003": {
+   "company": "Beta",
+   "first_seen": "2026-10-19",
+   "location": "Remote US",
+   "role": "software",
+   "source": "lever",
+   "status": "new",
+   "tier": "experienced",
+   "title": "Software Engineer",
+   "url": "https://jobs.lever.co/beta/11111111-2222-3333-4444-555555555555"
+  },
+  "closed:00000000012": {
+   "closed_at": "2026-10-19",
+   "company": "Kappa",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://job-boards.greenhouse.io/kappa/jobs/7007"
+  },
+  "eta:000000000008": {
+   "company": "Eta",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "security",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Security Engineer",
+   "url": "https://job-boards.greenhouse.io/eta/jobs/3003"
+  },
+  "gamma:000000000004": {
+   "company": "Gamma",
+   "first_seen": "2026-10-17",
+   "location": "New York, NY",
+   "role": "ml-ai",
+   "source": "ashby",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "ML Engineer",
+   "url": "https://jobs.ashbyhq.com/gamma/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  },
+  "li:000000000005": {
+   "company": "Delta",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "jobspy-linkedin",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://www.linkedin.com/jobs/view/123"
+  },
+  "nofile:00000000010": {
+   "company": "NoFilings Inc",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://job-boards.greenhouse.io/nofilings/jobs/5005"
+  },
+  "theta:000000000009": {
+   "company": "Theta",
+   "first_seen": "2026-10-17",
+   "location": "London, UK",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://job-boards.greenhouse.io/theta/jobs/4004"
+  },
+  "wd:000000000006": {
+   "company": "Epsilon",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "workday",
+   "status": "new",
+   "tier": "newgrad",
+   "title": "Software Engineer",
+   "url": "https://epsilon.wd5.myworkdayjobs.com/x/job/1"
+  },
+  "zeta:000000000007": {
+   "company": "Zeta",
+   "first_seen": "2026-10-17",
+   "location": "Austin, TX",
+   "role": "software",
+   "source": "greenhouse",
+   "status": "new",
+   "tier": "intern",
+   "title": "Software Engineer Intern",
+   "url": "https://job-boards.greenhouse.io/zeta/jobs/2002"
+  }
+ },
+ "sources": {},
+ "updated": "2026-10-20T00:00:00Z",
+ "version": 1
+}

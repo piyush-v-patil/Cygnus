@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+# Private profile folders - never commit personal data (spec §5)
+.autoapply/
+autoapply-profile/
+profile/
+*.sqlite
+secrets.env
+!config.example/secrets.env
+browser-profile/
+submissions/
+resumes/
+logs/
+calibration.json
+answers.yaml
+!config.example/answers.yaml

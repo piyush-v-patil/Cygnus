@@ -1,0 +1,8 @@
+bigtech:
+  - name: Airbnb
+    fetcher: greenhouse
+    token: airbnb
+other:
+  - name: Beta
+    fetcher: lever
+    token: beta

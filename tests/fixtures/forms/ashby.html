@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- Mimics jobs.ashbyhq.com/<org>/<id>/application as probed 2026-10-20:
+     .ashby-application-form-field-entry blocks with label[for], a required
+     class on the label, Yes/No as aria-pressed buttons in a "_yesno_" container,
+     radio groups named <uuid>_<uuid>, and checkbox groups whose names are the
+     option text. -->
+<html><head><meta charset="utf-8"><title>Ashby fixture</title></head><body>
+<div class="ashby-application-form-container">
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="_systemfield_name">Name</label>
+    <input id="_systemfield_name" name="_systemfield_name" type="text" required></div>
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="_systemfield_email">Email</label>
+    <input id="_systemfield_email" name="_systemfield_email" type="email" required></div>
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="_systemfield_resume">Resume</label>
+    <input id="_systemfield_resume" type="file" required style="display:none"></div>
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="q-auth">Are you authorized to work in the United States?</label>
+    <div class="_container_1 _yesno_1e3gg_148"><button type="button" aria-pressed="false">Yes</button><button type="button" aria-pressed="false">No</button><input type="checkbox" name="q-auth" tabindex="-1" style="display:none"></div></div>
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="q-relocate">Are you open to relocating to New York?</label>
+    <div class="_container_1 _yesno_1e3gg_148"><button type="button" aria-pressed="false">Yes</button><button type="button" aria-pressed="false">No</button></div></div>
+  <div class="ashby-application-form-field-entry"><label class="_required_x" for="q-proj">Tell us about a project you are proud of.</label>
+    <textarea id="q-proj" name="q-proj" required></textarea></div>
+  <div class="ashby-application-form-field-entry"><label for="q-start">When can you start?</label>
+    <fieldset>
+      <label><input type="radio" id="a_b-labeled-radio-0" name="a_b" value="Immediately"> Immediately</label>
+      <label><input type="radio" id="a_b-labeled-radio-1" name="a_b" value="Within a month"> Within a month</label>
+      <label><input type="radio" id="a_b-labeled-radio-2" name="a_b" value="Later"> Later</label>
+    </fieldset></div>
+  <div class="ashby-application-form-field-entry"><label for="x">Race / ethnicity</label>
+    <div>
+      <input type="checkbox" id="c_d-labeled-checkbox-0" name="Asian"><label for="c_d-labeled-checkbox-0">Asian</label>
+      <input type="checkbox" id="c_d-labeled-checkbox-1" name="White"><label for="c_d-labeled-checkbox-1">White</label>
+      <input type="checkbox" id="c_d-labeled-checkbox-2" name="I prefer not to answer"><label for="c_d-labeled-checkbox-2">I prefer not to answer</label>
+    </div></div>
+  <div class="ashby-application-form-field-entry"><label for="y">Sexual orientation</label>
+    <div>
+      <input type="checkbox" id="e_f-labeled-checkbox-0" name="Gay"><label for="e_f-labeled-checkbox-0">Gay</label>
+      <input type="checkbox" id="e_f-labeled-checkbox-1" name="I prefer not to answer"><label for="e_f-labeled-checkbox-1">I prefer not to answer</label>
+    </div></div>
+  <button class="ashby-application-form-submit-button" type="button" onclick="window.__submitted=(window.__submitted||0)+1">Submit Application</button>
+</div>
+<script>
+document.querySelectorAll('[class*=yesno]').forEach(function (g) {
+  g.querySelectorAll('button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      g.querySelectorAll('button').forEach(function (x) { x.setAttribute('aria-pressed', 'false'); });
+      b.setAttribute('aria-pressed', 'true');
+    });
+  });
+});
+</script>
+</body></html>

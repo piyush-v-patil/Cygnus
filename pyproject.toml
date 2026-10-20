@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cygnus-autoapply"
+version = "0.1.0"
+description = "Cygnus (AutoApply): local, human-approved job applications with Simplify + Claude"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.0",
+    "playwright>=1.45",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "pypdf>=4.0",
+    "reportlab>=4.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+autoapply = "autoapply.cli:main"
+cygnus = "autoapply.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autoapply*"]
+
+[tool.setuptools.package-data]
+autoapply = ["llm/prompts/*.md", "review/templates/*.html", "browser/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["browser: tests that launch Chromium against local fixture forms"]

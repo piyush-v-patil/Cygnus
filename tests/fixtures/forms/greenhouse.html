@@ -1,0 +1,89 @@
+<!doctype html>
+<!-- Mimics job-boards.greenhouse.io (2025+ React board) as probed 2026-10-20:
+     inputs labelled by label[for=id], react-select comboboxes
+     (input.select__input[role=combobox] + .select__single-value), an unlabeled
+     "requiredInput" mirror next to each combobox, a hidden resume file input
+     whose filename appears in a chip, and an invisible recaptcha textarea. -->
+<html><head><meta charset="utf-8"><title>Greenhouse fixture</title>
+<style>
+  .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .select__menu{border:1px solid #ccc;position:absolute;background:#fff;z-index:5}
+  .select__option{padding:4px}
+  .field-wrapper{margin:10px 0;position:relative}
+</style></head><body>
+<h1>Software Engineer</h1>
+<form id="application-form" onsubmit="event.preventDefault(); window.__submitted = (window.__submitted||0)+1; document.body.innerHTML='<h1 id=confirm>Thank you for applying</h1>';">
+  <div class="field-wrapper"><label for="first_name">First Name<span>*</span></label>
+    <input id="first_name" type="text" aria-required="true" class="input"></div>
+  <div class="field-wrapper"><label for="last_name">Last Name<span>*</span></label>
+    <input id="last_name" type="text" aria-required="true"></div>
+  <div class="field-wrapper"><label for="email">Email<span>*</span></label>
+    <input id="email" type="text" aria-required="true"></div>
+  <div class="field-wrapper"><label for="phone">Phone</label>
+    <input id="phone" type="tel"><input type="search" class="iti__search-input" placeholder="Search"></div>
+  <div class="field-wrapper file-upload"><label for="resume">Resume/CV<span>*</span></label>
+    <input id="resume" type="file" class="visually-hidden" aria-required="true">
+    <span class="file-upload__filename" id="resume-chip"></span><button type="button">Attach</button></div>
+  <div class="field-wrapper file-upload"><label for="cover_letter">Cover Letter</label>
+    <input id="cover_letter" type="file" class="visually-hidden"></div>
+  <div class="field-wrapper"><label for="question_101">LinkedIn Profile</label>
+    <input id="question_101" type="text" aria-required="false"></div>
+  <div class="field-wrapper"><label for="question_102">Why do you want to work at Acme?<span>*</span></label>
+    <textarea id="question_102" aria-required="true" maxlength="1500"></textarea></div>
+  <div class="field-wrapper"><label for="question_103">How many years of Python experience do you have?<span>*</span></label>
+    <input id="question_103" type="text" aria-required="true"></div>
+  <div class="field-wrapper select__container" data-options="Yes|No">
+    <label for="question_104">Will you now or in the future require sponsorship for employment visa status?<span>*</span></label>
+    <input id="question_104" role="combobox" class="select__input" aria-required="true" autocomplete="off">
+    <input class="remix-requiredInput" tabindex="-1" required>
+  </div>
+  <div class="field-wrapper select__container" data-options="Yes|No">
+    <label for="question_105">Are you willing to work onsite 5 days a week?<span>*</span></label>
+    <input id="question_105" role="combobox" class="select__input" aria-required="true" autocomplete="off">
+    <input class="remix-requiredInput" tabindex="-1" required>
+  </div>
+  <div class="field-wrapper select__container" data-options="He/him|She/her|They/them|Prefer not to say">
+    <label for="question_106">Pronouns</label>
+    <input id="question_106" role="combobox" class="select__input" autocomplete="off">
+  </div>
+  <div class="field-wrapper select__container" data-options="Male|Female|Decline to self identify">
+    <label for="gender">Gender</label>
+    <input id="gender" role="combobox" class="select__input" autocomplete="off">
+  </div>
+  <textarea id="g-recaptcha-response-100000" name="g-recaptcha-response" style="display:none"></textarea>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+document.querySelectorAll('.select__container').forEach(function (box) {
+  var input = box.querySelector('input[role=combobox]');
+  var opts = box.getAttribute('data-options').split('|');
+  var menu = null;
+  function close() { if (menu) { menu.remove(); menu = null; } }
+  function open() {
+    close();
+    menu = document.createElement('div'); menu.className = 'select__menu'; menu.setAttribute('role', 'listbox');
+    var q = input.value.toLowerCase();
+    opts.filter(function (o) { return !q || o.toLowerCase().indexOf(q) >= 0; }).forEach(function (o) {
+      var d = document.createElement('div'); d.className = 'select__option'; d.setAttribute('role', 'option');
+      d.textContent = o;
+      d.addEventListener('mousedown', function (ev) {
+        ev.preventDefault();
+        var sv = box.querySelector('.select__single-value');
+        if (!sv) { sv = document.createElement('div'); sv.className = 'select__single-value'; box.appendChild(sv); }
+        sv.textContent = o; input.value = ''; close();
+      });
+      menu.appendChild(d);
+    });
+    box.appendChild(menu);
+  }
+  input.addEventListener('focus', open);
+  input.addEventListener('click', open);
+  input.addEventListener('input', open);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  input.addEventListener('blur', function () { setTimeout(close, 150); });
+});
+document.getElementById('resume').addEventListener('change', function (e) {
+  document.getElementById('resume-chip').textContent = e.target.files[0] ? e.target.files[0].name : '';
+});
+</script>
+</body></html>

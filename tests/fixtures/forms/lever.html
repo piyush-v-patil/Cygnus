@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- Mimics jobs.lever.co/<co>/<id>/apply as probed 2026-10-20:
+     li.application-question with div.application-label and ✱ required marks,
+     inputs named name/email/phone/urls[...], custom cards[...][field0]
+     selects and radios, and a pronouns checkbox group sharing one name. -->
+<html><head><meta charset="utf-8"><title>Lever fixture</title></head><body>
+<form id="application-form" onsubmit="event.preventDefault(); window.__submitted=(window.__submitted||0)+1;">
+<ul>
+  <li class="application-question resume"><label><div class="application-label">Resume/CV <span class="required">✱</span></div>
+    <div class="application-field"><input type="file" id="resume-upload-input" name="resume"><span class="filename"></span></div></label></li>
+  <li class="application-question"><label><div class="application-label">Full name<span class="required">✱</span></div>
+    <div class="application-field"><input type="text" name="name" required></div></label></li>
+  <li class="application-question"><div class="application-label multiple-select">Pronouns</div>
+    <div class="application-field"><ul>
+      <li><label><input type="checkbox" name="pronouns" value="He/him"><span>He/him</span></label></li>
+      <li><label><input type="checkbox" name="pronouns" value="She/her"><span>She/her</span></label></li>
+      <li><label><input type="checkbox" name="pronouns" value="They/them"><span>They/them</span></label></li>
+    </ul></div></li>
+  <li class="application-question"><label><div class="application-label">Email<span class="required">✱</span></div>
+    <div class="application-field"><input type="email" name="email" required></div></label></li>
+  <li class="application-question"><label><div class="application-label">GitHub URL</div>
+    <div class="application-field"><input type="text" name="urls[GitHub]"></div></label></li>
+  <li class="application-question custom-question"><div><div class="application-label full-width dropdown"><div class="text">Where did you first hear about this job?<span class="required">✱</span></div></div>
+    <div class="application-field full-width required-field"><select name="cards[abc][field0]" required>
+      <option value="">Select...</option><option value="LinkedIn">LinkedIn</option><option value="Company website">Company website</option><option value="Referral">Referral</option>
+    </select></div></div></li>
+  <li class="application-question custom-question"><div><div class="application-label full-width multiple-choice"><div class="text">Do you require a reasonable accommodation?<span class="required">✱</span></div></div>
+    <div class="application-field full-width"><ul>
+      <li><label><input type="radio" name="cards[def][field0]" value="Yes" required><span>Yes</span></label></li>
+      <li><label><input type="radio" name="cards[def][field0]" value="No"><span>No</span></label></li>
+    </ul></div></div></li>
+  <li class="application-question"><label><div class="application-label">I confirm the information is accurate<span class="required">✱</span></div>
+    <div class="application-field"><input type="checkbox" name="consent" required></div></label></li>
+</ul>
+<button id="btn-submit" type="submit">Submit application</button>
+</form>
+</body></html>
