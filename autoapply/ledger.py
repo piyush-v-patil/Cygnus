@@ -357,8 +357,10 @@ class Ledger:
         """Send unsubmitted applications back to `scored` so the next run fills them afresh.
 
         Their fill plans are dropped; scores, descriptions and the answer bank stay.
+        `would_submit` (approved during a test run, never sent) can be requeued too,
+        so those jobs are applied to for real.
         """
-        lanes = [l for l in lanes if l in LANES]
+        lanes = [l for l in lanes if l in LANES or l == WOULD_SUBMIT]
         if not lanes:
             return []
         keys = [r.posting_key for r in self.postings_in(lanes)]

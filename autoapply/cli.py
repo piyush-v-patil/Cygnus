@@ -115,7 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--test", action="store_true", help="never click Submit in this session")
     sub.add_parser("status", help="counts per state, spend, last run")
     rq = sub.add_parser("requeue", help="send queued applications back to be filled again on the next run")
-    rq.add_argument("--lane", choices=["ready", "needs_input", "stuck", "all"], default="all")
+    rq.add_argument("--lane", choices=["ready", "needs_input", "stuck", "all", "tested"], default="all",
+                    help="all = ready + needs_input + stuck; tested = approved during --test runs (never sent)")
     b = sub.add_parser("browser", help="open the tool's browser (Simplify login, consent, profile)")
     b.add_argument("--url", help="page to open (default: the Simplify login page)")
     s = sub.add_parser("schedule", help="Windows Task Scheduler")
@@ -179,7 +180,7 @@ def _dispatch(args, paths: Paths) -> int:
         return 0
 
     if args.cmd == "requeue":
-        lanes = ["ready", "needs_input", "stuck"] if args.lane == "all" else [args.lane]
+        lanes = {"all": ["ready", "needs_input", "stuck"], "tested": ["would_submit"]}.get(args.lane, [args.lane])
         with RunLock(paths.lock):
             keys = Context(paths).ledger.requeue(lanes)
         print(f"{len(keys)} application(s) will be filled again on the next `autoapply run`."

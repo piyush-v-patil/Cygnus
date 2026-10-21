@@ -261,3 +261,18 @@ def test_requeue_sends_queued_back_to_scored(profile_dir, capsys):
     led = Ledger(profile_dir.ledger)
     assert led.get("a").state == SCORED and led.application("a") is None
     assert led.get("b").state == SUBMITTED                       # submitted stays submitted
+
+
+def test_requeue_tested_releases_test_approvals(profile_dir, capsys):
+    from autoapply.ledger import ENRICHED, FILLING, Ledger, READY, SCORED, WOULD_SUBMIT
+    led = Ledger(profile_dir.ledger)
+    led.upsert_discovered("t", {"source_name": "s"})
+    for st in (ENRICHED, SCORED, FILLING, READY, WOULD_SUBMIT):
+        led.set_state("t", st)
+    led.upsert_application("t", lane=READY, submission_dir="x")
+    led.close()
+    assert main(["--profile-dir", str(profile_dir.root), "requeue"]) == 0          # default leaves it
+    assert Ledger(profile_dir.ledger).get("t").state == WOULD_SUBMIT
+    assert main(["--profile-dir", str(profile_dir.root), "requeue", "--lane", "tested"]) == 0
+    assert "1 application(s)" in capsys.readouterr().out.splitlines()[-1]
+    assert Ledger(profile_dir.ledger).get("t").state == SCORED
