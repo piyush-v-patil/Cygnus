@@ -28,16 +28,33 @@ def skip_change(reason: str) -> dict:
     return {"status": "skip", "skip_reason": reason, "skipped_by": "autoapply"}
 
 
+def unskip_change(reason: str) -> dict:
+    """Undo a skip this tool wrote - and only that: a status the user set stays."""
+    return {"status": "new", "skip_reason": None, "skipped_by": None,
+            "_only_if": {"status": "skip", "skipped_by": "autoapply", "skip_reason": reason}}
+
+
 def apply_changes(doc: dict, changes: dict[str, dict]) -> list[str]:
-    """Set the given fields on the target ids only. Returns ids that were found."""
+    """Set the given fields on the target ids only. Returns ids that were changed.
+
+    A None value removes the field; `_only_if` applies the change only when the
+    job currently has those exact values.
+    """
     jobs = doc.get("jobs") or {}
     found = []
     for job_id, change in changes.items():
         job = jobs.get(job_id)
         if job is None:
             continue
+        cond = change.get("_only_if") or {}
+        if any(job.get(k) != v for k, v in cond.items()):
+            continue
         for k, v in change.items():
-            if k in ALLOWED_FIELDS:
+            if k not in ALLOWED_FIELDS:
+                continue
+            if v is None:
+                job.pop(k, None)
+            else:
                 job[k] = v
         found.append(job_id)
     return found

@@ -14,12 +14,12 @@ from .ats.detect import parse_key
 from .context import Context
 from .filters import prefilter
 from .h1b import H1BIndex
-from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, MAX_ERROR_RETRIES, RECHECKABLE, SCORED,
+from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, RECHECKABLE, SCORED,
                      SKIPPED, STUCK)
 from .llm import BudgetExceeded, LLMError
 from .llm.score import PROMPT_VERSION as SCORE_VERSION
 from .llm.score import score_posting
-from .writeback import skip_change
+from .writeback import skip_change, unskip_change
 
 log = logging.getLogger(__name__)
 DETAILS_MAX_AGE = timedelta(days=7)
@@ -157,20 +157,59 @@ def skip(ctx: Context, key: str, reason: str, stats: RunStats, detail: str | Non
 
 
 # ------------------------------------------------------------------ score --
+def not_targeted(ctx: Context, row) -> str | None:
+    """Why a posting is no longer wanted under the current filters (None = still wanted).
+
+    The prefilter only sees new postings; this applies a narrowed `filters:` to
+    postings already past it, without spending anything or losing their state.
+    """
+    f = ctx.profile.filters
+    if row.get("tier") and row["tier"] not in f.tiers:
+        return "tier"
+    if row.get("role") and row["role"] not in f.roles:
+        return "role"
+    if row.get("ats") and row["ats"] not in f.ats_allowed:
+        return "ats_not_allowed"
+    return None
+
+
+def release_low_fit(ctx: Context, stats: RunStats) -> None:
+    """With fit.low_fit: hold, earlier low_fit skips become held again and their
+    `skip` mark in job-monitor is undone (only where this tool set it)."""
+    if ctx.profile.fit.low_fit != "hold":
+        return
+    for row in [r for r in ctx.ledger.postings_in([SKIPPED]) if r.reason == "low_fit"]:
+        ctx.ledger.set_state(row.posting_key, HELD, "below_cutoff", "released: fit.low_fit is hold")
+        stats["released"] += 1
+        if ctx.writeback is not None:
+            ctx.writeback.queue(row.posting_key, unskip_change("low_fit"))
+
+
 def score(ctx: Context, stats: RunStats, limit: int | None = None, rescore: bool = False) -> list[str]:
-    """Claude fit score; blockers and the cutoff decide skip vs fill (§9.1)."""
+    """Claude fit score; blockers and the cutoff decide skip / hold / fill (§9.1).
+
+    Held postings are re-decided every run from their stored score (free), so a
+    lower cutoff takes effect at once; they are scored again only when the resume
+    used for them changed. `limit` counts postings that need a Claude call.
+    """
     led, profile = ctx.ledger, ctx.profile
-    rows = led.postings_in([ENRICHED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "score"]
+    rows = (led.postings_in([ENRICHED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "score"]
+            + led.postings_in([HELD]))
     calibration = ctx.calibration_examples()
     passed: list[str] = []
-    for n, row in enumerate(rows):
-        if limit is not None and n >= limit:
-            break
+    calls = 0
+    for row in rows:
         key = row.posting_key
+        if not_targeted(ctx, row):
+            stats["not_targeted"] += 1
+            continue
         resume = ctx.resumes.file_for(row.get("role"))
         rhash = ctx.resumes.hash(resume)
         s = None if rescore else led.score(key, SCORE_VERSION, rhash)
         if s is None:
+            if limit is not None and calls >= limit:
+                continue
+            calls += 1
             det = led.details(key) or {}
             desc = det.get("description_text") or ""
             hints = [h.evidence for h in blockers.scan(
@@ -212,8 +251,15 @@ def decide(ctx: Context, key: str, row, s: dict, stats: RunStats):
         stats.skipped("role")
         return
     if s["score"] < profile.fit.cutoff:
-        return skip(ctx, key, "low_fit", stats)
-    ctx.ledger.set_state(key, SCORED)
+        if profile.fit.low_fit == "skip":
+            return skip(ctx, key, "low_fit", stats)
+        if row.state != HELD:
+            ctx.ledger.set_state(key, HELD, "below_cutoff", f"score {s['score']} < {profile.fit.cutoff}")
+            stats["held"] += 1
+        return
+    ctx.ledger.set_state(key, SCORED, None, "cutoff met" if row.state == HELD else None)
+    if row.state == HELD:
+        stats["unheld"] += 1
 
 
 def role_for(ctx: Context, key: str) -> str | None:
@@ -237,6 +283,8 @@ def fill_candidates(ctx: Context, limit: int | None) -> list[str]:
     for r in rows:
         if limit is not None and len(out) >= limit:
             break
+        if not_targeted(ctx, r):
+            continue                     # filters narrowed since it was scored: not filled now
         if cap and taken[r.get("company")] >= cap:
             continue
         taken[r.get("company")] += 1
@@ -253,6 +301,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
     error = None
     try:
         sync(ctx, stats)
+        release_low_fit(ctx, stats)
         enrich(ctx, stats, limit)
         score(ctx, stats, limit)
         if not no_fill and "stopped" not in stats:

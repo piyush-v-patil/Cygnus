@@ -110,6 +110,9 @@ class VisaCfg(_Strict):
 
 class FitCfg(_Strict):
     cutoff: int = Field(65, ge=0, le=100)
+    # below the cutoff: hold = park it (not marked skip in job-monitor; filled later if the
+    # cutoff drops or a better-matching resume raises its score) | skip = drop it for good
+    low_fit: Literal["hold", "skip"] = "hold"
     order: Literal["newest_first"] = "newest_first"
 
 

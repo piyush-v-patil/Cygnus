@@ -32,11 +32,12 @@ SUBMITTED = "submitted"
 SUBMITTED_MANUAL = "submitted_manual"
 WOULD_SUBMIT = "would_submit"
 REJECTED_BY_USER = "rejected_by_user"
+HELD = "held"            # scored below the cutoff and parked (fit.low_fit: hold); re-decided every run
 
 LANES = (READY, NEEDS_INPUT, STUCK)
 TERMINAL = {FILTERED_OUT, UNSUPPORTED, CLOSED, SKIPPED, SUBMITTED, SUBMITTED_MANUAL,
             WOULD_SUBMIT, REJECTED_BY_USER}
-IN_FLIGHT = {ENRICHED, SCORED, FILLING, READY, NEEDS_INPUT, STUCK, ERROR}
+IN_FLIGHT = {ENRICHED, SCORED, HELD, FILLING, READY, NEEDS_INPUT, STUCK, ERROR}
 APPLIED = {SUBMITTED, SUBMITTED_MANUAL}
 
 # Rule-stage outcomes cost nothing to recompute, so they are re-checked every
@@ -50,14 +51,15 @@ MAX_ERROR_RETRIES = 3
 TRANSITIONS: dict[str, set[str]] = {
     DISCOVERED: {FILTERED_OUT, UNSUPPORTED, ENRICHED, CLOSED, SKIPPED, ERROR},
     FILTERED_OUT: {DISCOVERED},
-    SKIPPED: {DISCOVERED},          # only reached for RECHECKABLE skips, enforced in code
-    ENRICHED: {CLOSED, SKIPPED, SCORED, ERROR},
-    SCORED: {FILLING, SKIPPED, CLOSED, ERROR},
+    SKIPPED: {DISCOVERED, HELD},    # DISCOVERED: RECHECKABLE skips; HELD: low_fit released (hold policy)
+    ENRICHED: {CLOSED, SKIPPED, SCORED, HELD, ERROR},
+    SCORED: {FILLING, SKIPPED, HELD, CLOSED, ERROR},
+    HELD: {SCORED, SKIPPED, CLOSED, ERROR},
     FILLING: {READY, NEEDS_INPUT, STUCK, ERROR, CLOSED, SCORED},   # SCORED: requeued (budget)
     READY: {SUBMITTED, SUBMITTED_MANUAL, WOULD_SUBMIT, REJECTED_BY_USER, CLOSED, STUCK, NEEDS_INPUT},
     NEEDS_INPUT: {READY, SUBMITTED, SUBMITTED_MANUAL, WOULD_SUBMIT, REJECTED_BY_USER, CLOSED, STUCK},
     STUCK: {SUBMITTED, SUBMITTED_MANUAL, WOULD_SUBMIT, REJECTED_BY_USER, CLOSED, READY, NEEDS_INPUT},
-    ERROR: {ENRICHED, SCORED, FILLING, READY, NEEDS_INPUT, STUCK, CLOSED, SKIPPED},
+    ERROR: {ENRICHED, SCORED, HELD, FILLING, READY, NEEDS_INPUT, STUCK, CLOSED, SKIPPED},
     UNSUPPORTED: set(), CLOSED: set(), SUBMITTED: set(), SUBMITTED_MANUAL: set(),
     WOULD_SUBMIT: set(), REJECTED_BY_USER: set(),
 }
@@ -223,7 +225,8 @@ class Ledger:
         if new != row.state:
             if new not in TRANSITIONS.get(row.state, set()):
                 raise IllegalTransition(f"{key}: {row.state} -> {new}")
-            if row.state == SKIPPED and (SKIPPED, row.reason) not in RECHECKABLE:
+            released = new == HELD and row.reason == "low_fit"
+            if row.state == SKIPPED and (SKIPPED, row.reason) not in RECHECKABLE and not released:
                 raise IllegalTransition(f"{key}: skipped({row.reason}) is final")
         extra = ""
         args: list[Any] = [new, reason, now_iso()]

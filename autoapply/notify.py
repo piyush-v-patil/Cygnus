@@ -107,6 +107,9 @@ class Notifier:
                  f"Errors {counts.get('error', 0)}"]
         if skipped:
             lines.append("Skipped: " + ", ".join(f"{k} {v}" for k, v in sorted(skipped.items())))
+        if counts.get("held") or counts.get("unheld"):
+            lines.append(f"Below the cutoff, kept for later: {counts.get('held', 0)} new"
+                         + (f" · {counts['unheld']} now above it" if counts.get("unheld") else ""))
         if counts.get("closed"):
             lines.append(f"Closed: {counts['closed']}")
         if counts.get("stopped"):
