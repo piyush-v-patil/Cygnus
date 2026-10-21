@@ -350,6 +350,23 @@ class Ledger:
         r = self.db.execute("SELECT * FROM runs WHERE kind=? ORDER BY id DESC LIMIT 1", (kind,)).fetchone()
         return dict(r) if r else None
 
+    def requeue(self, lanes: Iterable[str]) -> list[str]:
+        """Send unsubmitted applications back to `scored` so the next run fills them afresh.
+
+        Their fill plans are dropped; scores, descriptions and the answer bank stay.
+        """
+        lanes = [l for l in lanes if l in LANES]
+        if not lanes:
+            return []
+        keys = [r.posting_key for r in self.postings_in(lanes)]
+        with self.tx():
+            for k in keys:
+                self.db.execute("UPDATE postings SET state=?, reason=NULL, error_count=0, updated_at=? "
+                                "WHERE posting_key=?", (SCORED, now_iso(), k))
+                self.db.execute("DELETE FROM applications WHERE posting_key=?", (k,))
+                self._event(k, "requeued", None)
+        return keys
+
     # ------------------------------------------------------------ writeback --
     def queue_writeback(self, key: str, change: dict, only_source: str) -> int:
         n = 0

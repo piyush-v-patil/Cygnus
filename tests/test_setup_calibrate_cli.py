@@ -243,3 +243,21 @@ def test_simplify_consent_reapplied_after_reset():
                                                        "analyticsEvents": False, "debugging": False}
     assert consent_value("accept") == {"privacy": True, "userEvents": True, "analyticsEvents": True, "debugging": True}
     assert asyncio.run(apply_consent(type("C", (), {"service_workers": []})(), "accept")) is False
+
+
+def test_requeue_sends_queued_back_to_scored(profile_dir, capsys):
+    from autoapply.ledger import ENRICHED, FILLING, Ledger, NEEDS_INPUT, SCORED, SUBMITTED
+    led = Ledger(profile_dir.ledger)
+    for k, end in (("a", NEEDS_INPUT), ("b", SUBMITTED)):
+        led.upsert_discovered(k, {"source_name": "s"})
+        for st in (ENRICHED, SCORED, FILLING, NEEDS_INPUT):
+            led.set_state(k, st)
+        led.upsert_application(k, lane=NEEDS_INPUT, fill_plan=[{"key": "x"}])
+        if end == SUBMITTED:
+            led.set_state(k, SUBMITTED)
+    led.close()
+    assert main(["--profile-dir", str(profile_dir.root), "requeue"]) == 0
+    assert "1 application(s)" in capsys.readouterr().out
+    led = Ledger(profile_dir.ledger)
+    assert led.get("a").state == SCORED and led.application("a") is None
+    assert led.get("b").state == SUBMITTED                       # submitted stays submitted

@@ -110,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--no-browser", action="store_true", help="do not open the UI in a web browser")
     rv.add_argument("--test", action="store_true", help="never click Submit in this session")
     sub.add_parser("status", help="counts per state, spend, last run")
+    rq = sub.add_parser("requeue", help="send queued applications back to be filled again on the next run")
+    rq.add_argument("--lane", choices=["ready", "needs_input", "stuck", "all"], default="all")
     b = sub.add_parser("browser", help="open the tool's browser (Simplify login, consent, profile)")
     b.add_argument("--url", help="page to open (default: the Simplify login page)")
     s = sub.add_parser("schedule", help="Windows Task Scheduler")
@@ -172,6 +174,14 @@ def _dispatch(args, paths: Paths) -> int:
             login_browser(paths, IO(), url=args.url, executable_path=exe, consent=consent)
         return 0
 
+    if args.cmd == "requeue":
+        lanes = ["ready", "needs_input", "stuck"] if args.lane == "all" else [args.lane]
+        with RunLock(paths.lock):
+            keys = Context(paths).ledger.requeue(lanes)
+        print(f"{len(keys)} application(s) will be filled again on the next `autoapply run`."
+              " Your saved answers are kept.")
+        return 0
+
     if args.cmd == "status":
         from .pipeline import status_report
         print(status_report(Context(paths)))
@@ -206,6 +216,7 @@ def _dispatch(args, paths: Paths) -> int:
         print(_summary(counts))
         from .pipeline import status_report
         print(status_report(ctx))
+        print(_next_step(ctx, test=args.test))
         return 0
 
     if args.cmd == "review":
@@ -219,6 +230,17 @@ def _dispatch(args, paths: Paths) -> int:
                 return 1
             return serve(ctx, port=args.port or ctx.profile.review.port, open_browser=not args.no_browser)
     return 1
+
+
+def _next_step(ctx, test: bool) -> str:
+    """The run never asks for confirmation: approving happens in the review queue."""
+    led = ctx.ledger
+    n = {lane: len(led.applications_in_lane(lane)) for lane in ("ready", "needs_input", "stuck")}
+    if not any(n.values()):
+        return "Nothing is waiting for review."
+    cmd = "autoapply review --test" if test or ctx.never_submit else "autoapply review"
+    return (f"\nWaiting for you: {n['ready']} ready, {n['needs_input']} need your answers, {n['stuck']} stuck.\n"
+            f"Nothing has been submitted. Next: run `{cmd}` to check each application and approve it.")
 
 
 def _summary(counts: dict) -> str:

@@ -13,7 +13,7 @@ import json
 import logging
 from pathlib import Path
 
-from .fields import wait_stable
+from .fields import read_values, wait_stable
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,8 @@ FILL_BUTTON = "#fill-button"                 # aria-label "Autofill this page"
 LOGIN_BUTTON = "#login-button"               # "Log In to Autofill" when signed out
 ONBOARDING_BUTTON = "#onboarding-button"     # profile not finished on simplify.jobs
 FILLING_TEXT = ("Autofilling",)              # fill button text while running
+START_TIMEOUT_S = 8.0                         # a click that shows no sign of filling by then is retried
+FETCHING_TEXT = "Fetching profile"           # #login-button text while the profile loads (not logged out)
 CONSENT_TEXT = "Before you autofill"         # first-run data-consent card
 LOGIN_URL = "https://simplify.jobs/auth/login"
 
@@ -92,7 +94,13 @@ async def panel_state(page, timeout_s: float = 20) -> str:
                 return "consent"
             return "ready"
         if await page.locator(LOGIN_BUTTON).count():
-            return "logged_out"
+            try:
+                text = await page.locator(LOGIN_BUTTON).first.inner_text(timeout=1000)
+            except Exception:  # noqa: BLE001
+                text = ""
+            if FETCHING_TEXT.lower() not in text.lower():
+                return "logged_out"
+            # still loading the profile: keep waiting
         if await page.locator(ONBOARDING_BUTTON).count():
             return "onboarding"
         await asyncio.sleep(0.5)
@@ -132,13 +140,58 @@ async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
     if state == "consent":
         raise SimplifyError("simplify_consent",
                             "Simplify's data-consent card is still showing (the tool's automatic answer did not stick)")
-    btn = page.locator(FILL_BUTTON).first
-    try:
-        await btn.evaluate("el => el.click()")   # works while the panel is collapsed, too
-    except Exception as e:  # noqa: BLE001
-        raise SimplifyError("simplify_click_failed", f"could not click Simplify autofill: {e}") from e
-    await asyncio.sleep(1.5)
-    return await wait_stable(page, hints, quiet_s=2.0, timeout_s=timeout_s, busy=lambda: _busy(page))
+    start = await read_values(page, hints)
+    if len(_filled(start)) >= 2:
+        # Simplify can autofill on page load by itself; one more click is harmless
+        log.debug("Simplify already filled %d fields on load", len(_filled(start)))
+    for attempt in range(3):
+        # the button stays disabled while Simplify fetches the profile; a click on a
+        # disabled button does nothing, so wait for it to become clickable first
+        if not await _wait_enabled(page, timeout_s=min(30.0, timeout_s)):
+            raise SimplifyError("simplify_not_ready",
+                                "Simplify's Autofill button stayed disabled (its profile did not load)")
+        try:
+            await page.locator(FILL_BUTTON).first.evaluate("el => el.click()")   # works while collapsed too
+        except Exception as e:  # noqa: BLE001
+            raise SimplifyError("simplify_click_failed", f"could not click Simplify autofill: {e}") from e
+        if await _wait_started(page, hints, start, timeout_s=START_TIMEOUT_S):
+            break
+        log.info("  Simplify did not start filling; clicking Autofill again (%d of 3)", attempt + 2)
+    after = await wait_stable(page, hints, quiet_s=2.0, timeout_s=timeout_s, busy=lambda: _busy(page))
+    if not (_filled(after) - _filled(start)) and len(_filled(start)) < 2:
+        raise SimplifyError("simplify_did_not_fill", "Simplify's autofill filled no field on this form")
+    return after
+
+
+def _filled(snapshot: dict[str, str]) -> set[str]:
+    return {k for k, v in snapshot.items() if (v or "").strip()}
+
+
+async def _wait_enabled(page, timeout_s: float) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        btn = page.locator(FILL_BUTTON)
+        try:
+            if await btn.count() and not await btn.first.is_disabled(timeout=1000):
+                return True
+        except Exception:  # noqa: BLE001 - the panel re-renders while loading
+            pass
+        await asyncio.sleep(0.5)
+    return False
+
+
+async def _wait_started(page, hints: dict, start: dict[str, str], timeout_s: float) -> bool:
+    """True once Simplify shows it is filling, or any field gained a value."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        if await _busy(page):
+            return True
+        if _filled(await read_values(page, hints)) - _filled(start):
+            return True
+        await asyncio.sleep(0.5)
+    return False
 
 
 async def health_probe(ctx, rep) -> None:

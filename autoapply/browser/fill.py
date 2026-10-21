@@ -187,7 +187,8 @@ async def _upload_registered(page, f: Field, filename: str, hints: dict) -> bool
     return False
 
 
-async def fill_one(ctx, bs, posting_key: str, check_consistency: bool = False) -> FillOutcome:
+async def fill_one(ctx, bs, posting_key: str, check_consistency: bool = False,
+                   track: dict | None = None) -> FillOutcome:
     """Fill the form for one scored posting. Leaves the page open in the outcome."""
     from ..pipeline import role_for
     led = ctx.ledger
@@ -201,23 +202,31 @@ async def fill_one(ctx, bs, posting_key: str, check_consistency: bool = False) -
     det = led.details(posting_key) or {}
     desc = det.get("description_text") or ""
     posting = dict(row.data)
+    track = track if track is not None else {}
     page = await bs.new_page()
+    track["page"] = page
     try:
         return await _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_path,
-                                   resume_text, desc, posting, check_consistency)
+                                   resume_text, desc, posting, check_consistency, track)
     except BaseException as e:
         e.page = page        # the caller screenshots / closes it
         raise
 
 
 async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_path, resume_text,
-                        desc, posting, check_consistency) -> FillOutcome:
+                        desc, posting, check_consistency, track) -> FillOutcome:
+    def step(name: str):
+        track["step"] = name
+        log.info("    %s", name)
+
     profile = ctx.profile
     plan: list[PlanEntry] = []
     missing: list[dict] = []
     generated: list[str] = []
+    step("opening the form")
     await open_form(page, form_url(ctx, posting_key), hints, ctx.profile.browser.page_timeout_s)
     before = {f.key: f.value for f in await enumerate_fields(page, hints)}
+    step("Simplify autofill")
     await run_simplify(ctx, page, hints)
     fields = await enumerate_fields(page, hints)
     for f in fields:
@@ -233,6 +242,8 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
             plan.append(PlanEntry(f.key, f.label, f.kind, f.value, "simplify", f.required, f.options))
 
     # §8.4 the one exception to "Simplify wins": the resume chosen for this job
+    log.info("    Simplify filled %d field(s)", sum(f.filled_by_simplify for f in fields))
+    step(f"attaching {resume_name}")
     rf = await attach_resume(page, fields, resume_path, hints)
     if rf is not None:
         plan.append(PlanEntry(rf.key, rf.label, "file", resume_name, "resume", rf.required))
@@ -274,6 +285,7 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
             to_claude.append(f)
 
     if to_claude:
+        step(f"asking Claude about {len(to_claude)} blank field(s)")
         listing = [{"id": f.key, "label": f.label, "type": f.kind if f.kind != "text" else (f.input_type or "text"),
                     "options": f.options, "required": f.required, "max_length": f.max_length} for f in to_claude]
         verdicts = await asyncio.to_thread(answer_fields, ctx.llm, profile, resume_text, posting, desc, listing)
@@ -288,6 +300,7 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
                                       evidence=v.get("evidence"), facts_used=v.get("facts_used") or [],
                                       claude_kind=v["kind"]))
 
+    step("checking the filled form")
     # final read: a value the page did not keep, or a required field nobody claimed, is missing
     final = await enumerate_fields(page, hints)
     by_key = {f.key: f for f in final}
@@ -378,19 +391,33 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     def company(k: str) -> str:
         return (led.get(k).get("company") or k).strip().lower()
 
+    total = len(pending)
+    done = {"n": 0}
+
     async def handle(bs, key):
         row = led.get(key)
+        done["n"] += 1
+        log.info("[%d/%d] %s - %s", done["n"], total, row.get("company"), row.get("title"))
         if row.state == ERROR:
             led.set_state(key, FILLING, None, "retry")
         else:
             led.set_state(key, FILLING)
         page = None
+        track: dict = {}
+        limit = ctx.profile.browser.form_timeout_s
         try:
             # §15.8 asks for the check after the first autofill; it is free, so every
             # form is checked - the first one that carries the question is the first check
-            out = await fill_one(ctx, bs, key, check_consistency=True)
+            try:
+                out = await asyncio.wait_for(fill_one(ctx, bs, key, check_consistency=True, track=track), limit)
+            except asyncio.TimeoutError:
+                err = Stuck("timed_out", f"no result after {int(limit)}s while {track.get('step', 'starting')}")
+                err.page = track.get("page")
+                raise err from None
             page = out.page
             record_outcome(ctx, key, out, stats)
+            log.info("    -> %s", "Ready" if out.lane == READY else
+                     f"Needs input ({len(out.missing)} question(s): {', '.join(m['label'][:40] for m in out.missing[:3])})")
             if not state["probe_done"] or not state.get("marked"):
                 state["probe_done"] = state["marked"] = True
                 _mark_simplify_good(ctx)
@@ -400,10 +427,11 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             state["stop"] = f"Simplify's legal answers disagree with your profile: {e}"
         except Stuck as e:
             page = getattr(e, "page", None)
+            log.info("    -> Stuck: %s", e)
             record_stuck(ctx, key, str(e), stats, screenshot=await _shot(ctx, page, key))
             if not state["probe_done"] and e.reason.startswith("simplify"):
                 state["stop"] = f"Simplify was updated and autofill failed on the probe form: {e}"
-            elif e.reason in ("simplify_logged_out", "simplify_missing", "simplify_consent"):
+            elif e.reason in ("simplify_logged_out", "simplify_missing", "simplify_consent", "simplify_not_ready"):
                 state["stop"] = f"Simplify is not usable: {e}"
         except BudgetExceeded as e:
             page = getattr(e, "page", None)
