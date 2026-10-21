@@ -125,6 +125,9 @@ class BrowserCfg(_Strict):
     parallel_tabs: int = Field(3, ge=1, le=8)
     headless: bool = False
     executable_path: str | None = None   # override Playwright's bundled Chromium
+    # Simplify forgets its data-consent card on every launch (see browser/simplify.py);
+    # the tool re-applies this choice: essentials = "Essentials only", accept = "Accept"
+    simplify_consent: Literal["essentials", "accept"] = "essentials"
     autofill_timeout_s: float = 45
     page_timeout_s: float = 45
 

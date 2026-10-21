@@ -12,6 +12,24 @@ import logging
 log = logging.getLogger(__name__)
 
 
+async def settle_extension(context, consent: str) -> None:
+    """Wait for Simplify's service worker, re-apply the consent choice, close its tutorial tabs.
+
+    Simplify treats every launch as a fresh install (see simplify.apply_consent).
+    """
+    from .simplify import apply_consent
+    if not context.service_workers:
+        try:
+            await context.wait_for_event("serviceworker", timeout=10000)
+        except Exception:  # noqa: BLE001
+            log.warning("no extension service worker after 10s")
+    await apply_consent(context, consent)
+    await asyncio.sleep(0.5)
+    for p in list(context.pages):
+        if p.url.startswith("chrome-extension://"):
+            await p.close()
+
+
 class BrowserSession:
     """`async with BrowserSession(ctx) as bs:` -> bs.context (a BrowserContext).
 
@@ -48,16 +66,7 @@ class BrowserSession:
         return self
 
     async def _settle_extension(self):
-        """Wait for Simplify's service worker and close its first-run tutorial tabs."""
-        if not self.context.service_workers:
-            try:
-                await self.context.wait_for_event("serviceworker", timeout=10000)
-            except Exception:  # noqa: BLE001
-                log.warning("no extension service worker after 10s")
-        await asyncio.sleep(1.0)
-        for p in list(self.context.pages):
-            if p.url.startswith("chrome-extension://"):
-                await p.close()
+        await settle_extension(self.context, self.ctx.profile.browser.simplify_consent)
 
     def extension_loaded(self) -> bool:
         return any(w.url.startswith("chrome-extension://") for w in self.context.service_workers)

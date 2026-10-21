@@ -190,3 +190,56 @@ def test_simplify_found_in_brave(tmp_path, monkeypatch):
     browser, src = w.find_installed_simplify("abc")
     assert browser == "Brave" and src.name == "3.1.10_0"
     assert w.install_extension(src, tmp_path / "out") == "3.1.10"
+
+
+def test_repo_and_branch_prompts_reject_yes(capsys):
+    from autoapply.setup_wizard import IO, ask_branch, ask_repo
+    answers = iter(["y", "https://github.com/Piyush-v-patil/job-monitor/", "yes", ""])
+    said = []
+    io = IO(ask=lambda p: next(answers), say=said.append)
+    assert ask_repo(io, "repo", "Piyush-v-patil/job-monitor") == "Piyush-v-patil/job-monitor"
+    assert ask_branch(io, "Branch", "main") == "main"
+    assert len(said) == 2 and "'y' is not owner/repo" in said[0]
+
+
+def test_browser_command(profile_dir, monkeypatch, capsys):
+    import autoapply.setup_wizard as w
+    assert main(["--profile-dir", str(profile_dir.root), "browser"]) == 1      # no extension yet
+    assert "autoapply setup" in capsys.readouterr().err
+    profile_dir.extension.mkdir(parents=True)
+    (profile_dir.extension / "manifest.json").write_text('{"version": "3.1.10"}')
+    opened = []
+    monkeypatch.setattr(w, "login_browser", lambda paths, io, url=None, executable_path=None, consent="essentials": opened.append((url, consent)))
+    assert main(["--profile-dir", str(profile_dir.root), "browser", "--url", "https://simplify.jobs"]) == 0
+    assert opened == [("https://simplify.jobs", "essentials")] and not profile_dir.lock.exists()
+
+
+def test_simplify_consent_reapplied_after_reset():
+    import asyncio
+    from autoapply.browser.simplify import CONSENT_KEY, apply_consent, consent_value
+
+    class SW:
+        url = "chrome-extension://abc/background.js"
+
+        def __init__(self):
+            self.store, self.reads = {}, 0
+
+        async def evaluate(self, js, arg=None):
+            if js.startswith("chrome.storage.local.get"):
+                self.reads += 1
+                if self.reads == 2:                 # Simplify's onInstalled("install") reset lands
+                    self.store[CONSENT_KEY] = {}
+                return dict(self.store)
+            self.store[CONSENT_KEY] = arg
+            return None
+
+    class Ctx:
+        def __init__(self):
+            self.service_workers = [SW()]
+
+    c = Ctx()
+    assert asyncio.run(apply_consent(c, "essentials", timeout_s=3))
+    assert c.service_workers[0].store[CONSENT_KEY] == {"privacy": True, "userEvents": False,
+                                                       "analyticsEvents": False, "debugging": False}
+    assert consent_value("accept") == {"privacy": True, "userEvents": True, "analyticsEvents": True, "debugging": True}
+    assert asyncio.run(apply_consent(type("C", (), {"service_workers": []})(), "accept")) is False
