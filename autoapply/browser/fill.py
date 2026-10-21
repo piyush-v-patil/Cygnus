@@ -19,7 +19,7 @@ from ..llm import BudgetExceeded, LLMError
 from ..llm.answer import answer_fields
 from ..llm.cover_letter import render_pdf, write_cover_letter
 from ..normalize import normalize_question, slug
-from .fields import Field, FillError, combobox_options, enumerate_fields, fill_field
+from .fields import Field, FillError, combobox_options, safe_screenshot, enumerate_fields, fill_field
 from .simplify import SimplifyError, autofill
 
 log = logging.getLogger(__name__)
@@ -318,10 +318,10 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
             missing.append(_missing(f, "still empty after autofill"))
 
     shot = ctx.paths.screenshots / f"{slug(posting_key, 80)}.png"
-    await page.screenshot(path=str(shot), full_page=True)
+    shot = await safe_screenshot(page, shot)
     lane = NEEDS_INPUT if missing else READY
     return FillOutcome(lane=lane, plan=[p.to_dict() for p in plan], missing=missing, stuck_reason=None,
-                       screenshot=str(shot), resume_file=resume_name, generated=generated, page=page)
+                       screenshot=shot, resume_file=resume_name, generated=generated, page=page)
 
 
 def _missing(f: Field, reason: str) -> dict:
@@ -424,7 +424,9 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
         except ConsistencyError as e:
             page = getattr(e, "page", None)
             record_stuck(ctx, key, f"consistency_check: {e}", stats, screenshot=await _shot(ctx, page, key))
-            state["stop"] = f"Simplify's legal answers disagree with your profile: {e}"
+            state["stop"] = (f"Simplify's legal answers disagree with your profile: {e}. Fix whichever is "
+                             "wrong - your Simplify profile (simplify.jobs > Profile > work authorization) "
+                             "or your visa answers (`autoapply setup`) - then run again")
         except Stuck as e:
             page = getattr(e, "page", None)
             log.info("    -> Stuck: %s", e)
@@ -440,10 +442,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             stats["stopped"] = str(e)
         except LLMError as e:
             page = getattr(e, "page", None)
+            log.info("    -> Error, will be retried next run: %s", e)
             fail(ctx, key, "fill", e, stats)
         except Exception as e:  # noqa: BLE001 - one bad form must not end the run
             page = getattr(e, "page", None)
             log.exception("fill %s crashed", key)
+            log.info("    -> Error, will be retried next run: %s", str(e).splitlines()[0][:200])
             fail(ctx, key, "fill", f"{type(e).__name__}: {e}", stats)
         finally:
             # with `run --review`, a filled (or stuck) form stays open so approval can submit
@@ -496,12 +500,7 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
 async def _shot(ctx, page, key: str) -> str | None:
     if page is None:
         return None
-    path = ctx.paths.screenshots / f"{slug(key, 80)}.png"
-    try:
-        await page.screenshot(path=str(path), full_page=True)
-        return str(path)
-    except Exception:  # noqa: BLE001
-        return None
+    return await safe_screenshot(page, ctx.paths.screenshots / f"{slug(key, 80)}.png")
 
 
 def _mark_simplify_good(ctx):

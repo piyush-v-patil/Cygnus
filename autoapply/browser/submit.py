@@ -10,7 +10,7 @@ from ..ats import form_hints, parse_key
 from ..ledger import (CLOSED, NEEDS_INPUT, READY, STUCK, SUBMITTED, SUBMITTED_MANUAL, WOULD_SUBMIT)
 from ..records import submission_dir, write_record
 from ..writeback import applied_change
-from .fields import enumerate_fields
+from .fields import enumerate_fields, safe_screenshot
 from .fill import Stuck, detect_blockers
 from .replay import replay
 
@@ -137,7 +137,7 @@ async def submit(ctx, bs, posting_key: str) -> dict:
 
     posting = dict(row.data)
     sub = submission_dir(ctx.paths.submissions, posting)
-    await page.screenshot(path=str(sub / "form.png"), full_page=True)
+    await safe_screenshot(page, sub / "form.png")
     sent = [{"label": f.label, "value": f.value, "kind": f.kind, "required": f.required,
              "source": _source(app, f.key)} for f in await enumerate_fields(page, hints)]
     resume = ctx.resumes.path(app["resume_file"]) if app.get("resume_file") else None
@@ -163,11 +163,12 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         if problem:
             raise Stuck("submit_failed", problem)
     except Stuck as e:
-        await page.screenshot(path=str(sub / "after_submit.png"), full_page=True)
+        await safe_screenshot(page, sub / "after_submit.png")
         _stuck(ctx, posting_key, e, page)
         return {"state": STUCK, "detail": str(e)}
 
-    await page.screenshot(path=str(sub / "after_submit.png"), full_page=True)
+    # the application is sent: nothing from here on may fail before it is recorded
+    await safe_screenshot(page, sub / "after_submit.png")
     write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
                  led.score(posting_key), {"final_url": page.url})
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -188,10 +189,7 @@ async def mark_manual(ctx, bs, posting_key: str) -> dict:
     sub = submission_dir(ctx.paths.submissions, posting)
     page, _ = ctx.take_tab(posting_key)
     if page is not None:
-        try:
-            await page.screenshot(path=str(sub / "after_submit.png"), full_page=True)
-        except Exception:  # noqa: BLE001
-            pass
+        await safe_screenshot(page, sub / "after_submit.png")
     det = led.details(posting_key) or {}
     resume = ctx.resumes.path(app["resume_file"]) if app.get("resume_file") else None
     write_record(sub, posting, app.get("fill_plan") or [], resume, [], det.get("description_text", ""),

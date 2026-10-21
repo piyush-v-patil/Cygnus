@@ -244,11 +244,15 @@ def _next_step(ctx, test: bool) -> str:
     """The run never asks for confirmation: approving happens in the review queue."""
     led = ctx.ledger
     n = {lane: len(led.applications_in_lane(lane)) for lane in ("ready", "needs_input", "stuck")}
+    errors = led.counts().get("error", 0)
+    retry = (f"\n{errors} application(s) hit an error and will be retried on the next run "
+             "(`autoapply status` lists why)." if errors else "")
     if not any(n.values()):
-        return "Nothing is waiting for review."
+        return "Nothing is waiting for review." + retry
     cmd = "autoapply review --test" if test or ctx.never_submit else "autoapply review"
     return (f"\nWaiting for you: {n['ready']} ready, {n['needs_input']} need your answers, {n['stuck']} stuck.\n"
-            f"Nothing has been submitted. Next: run `{cmd}` to check each application and approve it.")
+            f"Nothing has been submitted. Next: run `{cmd}` to check each application and approve it."
+            + retry)
 
 
 def _summary(counts: dict) -> str:
