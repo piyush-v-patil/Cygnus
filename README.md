@@ -55,6 +55,7 @@ autoapply status                                 # counts per state, spend this 
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
 autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run
+autoapply requeue --lane tested                  # after testing: let test-approved jobs be applied for real
 autoapply browser [--url URL]                    # open the tool's browser (Simplify login, profile)
 autoapply schedule install|remove|show           # Windows Task Scheduler
 autoapply health                                 # the pre-run checks on their own
