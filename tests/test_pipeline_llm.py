@@ -295,3 +295,59 @@ PDF_RESUME = ("EXPERIENCE\nSoftware Engineer, Acme\n- 3 years of experi-\nence w
 def test_evidence_survives_pdf_text_artefacts(quote, ok):
     from autoapply.llm.answer import evidence_in_resume
     assert evidence_in_resume(quote, PDF_RESUME) is ok
+
+
+@pytest.mark.parametrize("label,kind,open_", [
+    ("Why do you want to work at Snowflake?*", "textarea", True),
+    ("What interests you about this role?", "textarea", True),
+    ("Tell us about a project you are proud of.", "textarea", True),
+    ("Briefly describe your experience with distributed systems", "textarea", True),
+    ("Anything else you'd like us to know?", "textarea", True),
+    ("Why Asana?", "text", True),
+    ("Explain why you will require visa sponsorship", "textarea", False),     # legal: never an essay
+    ("Describe your salary expectations", "text", False),
+    ("Are you willing to relocate? Explain.", "textarea", False),
+    ("How did you hear about us? Describe.", "text", False),
+    ("Why do you want to work here?", "select", False),                        # a choice is a fact
+    ("LinkedIn Profile", "text", False),
+])
+def test_open_ended_detection(label, kind, open_):
+    from autoapply.llm.answer import is_open_ended
+    assert is_open_ended({"label": label, "type": kind, "options": ["a"] if kind == "select" else []}) is open_
+
+
+def test_answers_use_short_ids_and_retry_open_ended(make_ctx):
+    from autoapply.llm.answer import answer_fields
+    calls = []
+
+    def responder(params):
+        content = params["messages"][0]["content"]
+        listing = json.loads(content.split("Blank fields:\n", 1)[1].split("\n\nThese are open-ended", 1)[0])
+        calls.append((listing, "Do not answer needs_user" in content))
+        out = []
+        for f in listing:
+            if "Why" in f["label"] and not calls[-1][1]:
+                # an over-cautious first answer: left for the user
+                out.append({"id": f["id"], "kind": "needs_user", "answer": None, "evidence": None,
+                            "facts_used": [], "needs_user_reason": "personal motivation"})
+            elif "Why" in f["label"]:
+                out.append({"id": f["id"], "kind": "essay", "answer": "Snowflake's data platform matches the "
+                            "Python services I built at Acme.", "evidence": None,
+                            "facts_used": ["Python services at Acme"], "needs_user_reason": None})
+            else:
+                out.append({"id": f["id"], "kind": "needs_user", "answer": None, "evidence": None,
+                            "facts_used": [], "needs_user_reason": "not in resume"})
+        return {"fields": out}
+    ctx = make_ctx()
+    ctx._llm_transport = FakeTransport(responder)
+    fields = [{"id": "id:question_32968103003", "label": "Why do you want to work at Snowflake?*",
+               "type": "textarea", "required": True},
+              {"id": "name:cards[0e0cf60a-07b7][field0]", "label": "Expected start date", "type": "text",
+               "required": True}]
+    out = answer_fields(ctx.llm, ctx.profile, "Python services at Acme", {"company": "Snowflake"}, "desc", fields)
+    assert [f["id"] for f in calls[0][0]] == ["f1", "f2"] and calls[0][0][0]["open_ended"] is True
+    assert "open_ended" not in calls[0][0][1]
+    assert len(calls) == 2 and calls[1][1] and [f["id"] for f in calls[1][0]] == ["f1"]   # only the essay retried
+    essay = out["id:question_32968103003"]
+    assert essay["kind"] == "essay" and "Snowflake" in essay["answer"]
+    assert out["name:cards[0e0cf60a-07b7][field0]"]["kind"] == "needs_user"
