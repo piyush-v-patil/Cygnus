@@ -110,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--no-browser", action="store_true", help="do not open the UI in a web browser")
     rv.add_argument("--test", action="store_true", help="never click Submit in this session")
     sub.add_parser("status", help="counts per state, spend, last run")
+    b = sub.add_parser("browser", help="open the tool's browser (Simplify login, consent, profile)")
+    b.add_argument("--url", help="page to open (default: the Simplify login page)")
     s = sub.add_parser("schedule", help="Windows Task Scheduler")
     s.add_argument("action", choices=["install", "remove", "show"])
     a = sub.add_parser("answers", help="the answer bank")
@@ -154,6 +156,20 @@ def _dispatch(args, paths: Paths) -> int:
         from .scheduler_windows import schedule_command
         ctx = Context(paths)
         return schedule_command(args.action, ctx, args.profile_dir)
+
+    if args.cmd == "browser":
+        from .browser.simplify import extension_version
+        from .setup_wizard import IO, login_browser
+        if extension_version(paths.extension) is None:
+            print(f"Simplify is not installed at {paths.extension}. Run `autoapply setup` first.", file=sys.stderr)
+            return 1
+        try:
+            exe = Context(paths).profile.browser.executable_path
+        except ConfigError:
+            exe = None
+        with RunLock(paths.lock):          # one browser on this profile at a time
+            login_browser(paths, IO(), url=args.url, executable_path=exe)
+        return 0
 
     if args.cmd == "status":
         from .pipeline import status_report

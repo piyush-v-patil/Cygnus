@@ -359,7 +359,8 @@ def step_simplify(paths: Paths, io: IO) -> None:
         login_browser(paths, io)
 
 
-def login_browser(paths: Paths, io: IO) -> None:
+def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path: str | None = None) -> None:
+    """Open the tool's own Chromium (with Simplify and its saved login) until the user presses Enter."""
     import asyncio
     from .browser.simplify import LOGIN_URL
 
@@ -369,9 +370,13 @@ def login_browser(paths: Paths, io: IO) -> None:
         async with async_playwright() as pw:
             ctx = await pw.chromium.launch_persistent_context(
                 str(paths.browser_profile), headless=False, no_viewport=True,
+                executable_path=executable_path or None,
                 args=[f"--disable-extensions-except={ext}", f"--load-extension={ext}"])
             page = await ctx.new_page()
-            await page.goto(LOGIN_URL)
+            await page.goto(url or LOGIN_URL)
+            for p in list(ctx.pages):          # Simplify's first-run tutorial tab
+                if p.url.startswith("chrome-extension://"):
+                    await p.close()
             io.say("  In the browser window: log in to Simplify, then open any job application page,\n"
                    "  click Accept on Simplify's 'Before you autofill' card, and complete your Simplify\n"
                    "  profile there (work authorization, sponsorship, demographics, salary, education,\n"

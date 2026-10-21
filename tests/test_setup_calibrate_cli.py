@@ -200,3 +200,15 @@ def test_repo_and_branch_prompts_reject_yes(capsys):
     assert ask_repo(io, "repo", "Piyush-v-patil/job-monitor") == "Piyush-v-patil/job-monitor"
     assert ask_branch(io, "Branch", "main") == "main"
     assert len(said) == 2 and "'y' is not owner/repo" in said[0]
+
+
+def test_browser_command(profile_dir, monkeypatch, capsys):
+    import autoapply.setup_wizard as w
+    assert main(["--profile-dir", str(profile_dir.root), "browser"]) == 1      # no extension yet
+    assert "autoapply setup" in capsys.readouterr().err
+    profile_dir.extension.mkdir(parents=True)
+    (profile_dir.extension / "manifest.json").write_text('{"version": "3.1.10"}')
+    opened = []
+    monkeypatch.setattr(w, "login_browser", lambda paths, io, url=None, executable_path=None: opened.append(url))
+    assert main(["--profile-dir", str(profile_dir.root), "browser", "--url", "https://simplify.jobs"]) == 0
+    assert opened == ["https://simplify.jobs"] and not profile_dir.lock.exists()
