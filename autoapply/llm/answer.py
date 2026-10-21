@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 from ..config import Profile
 from ..normalize import normalize_question
@@ -37,12 +38,21 @@ SCHEMA = {
 
 
 def _squash(t: str) -> str:
-    return re.sub(r"\s+", " ", (t or "")).strip().lower()
+    """Text reduced to its letters and digits, for verbatim comparison.
+
+    Resume text comes out of a PDF with ligatures (\ufb01 for "fi"), words split
+    across lines ("experi-\nence") and assorted dashes and quotes, while Claude
+    quotes the words as a person reads them. The same words in the same order
+    still have to be there; only those artefacts are ignored.
+    """
+    t = unicodedata.normalize("NFKC", t or "")
+    t = re.sub(r"(\w)[-\u2010\u00ad]\s*\n\s*(\w)", r"\1\2", t)   # re-join hyphenated line breaks
+    return re.sub(r"[^0-9a-z]+", "", t.lower())
 
 
 def evidence_in_resume(evidence: str | None, resume: str) -> bool:
     ev = _squash(evidence or "")
-    return len(ev) >= 4 and ev in _squash(resume)
+    return len(ev) >= 6 and ev in _squash(resume)
 
 
 def match_option(answer: str, options: list[str]) -> str | None:

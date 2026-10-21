@@ -277,3 +277,21 @@ def test_narrowed_roles_apply_to_already_scored_postings(make_ctx, transport):
     assert "greenhouse:acme:1001" not in fill_candidates(ctx, None)
     ctx.profile.filters.roles = ["software", "backend"]
     assert "greenhouse:acme:1001" in fill_candidates(ctx, None)             # nothing was lost
+
+
+PDF_RESUME = ("EXPERIENCE\nSoftware Engineer, Acme\n- 3 years of experi-\nence with Python and Go\n"
+              "- Proﬁcient in AWS and Kubernetes\n- Led a team of 4 – payments migration")
+
+
+@pytest.mark.parametrize("quote,ok", [
+    ("3 years of experience with Python and Go", True),       # line-break hyphenation
+    ("Proficient in AWS and Kubernetes", True),               # 'fi' ligature in the PDF text
+    ("Led a team of 4 - payments migration", True),           # en dash vs hyphen
+    ("“3 years of experience with Python”", True),            # quotes around the quote
+    ("5 years of experience with Python", False),             # a different fact
+    ("Proficient in AWS and Terraform", False),
+    ("AWS", False),                                           # too short to prove anything
+])
+def test_evidence_survives_pdf_text_artefacts(quote, ok):
+    from autoapply.llm.answer import evidence_in_resume
+    assert evidence_in_resume(quote, PDF_RESUME) is ok
