@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Callable
 
 from .context import Context
-from .ledger import ENRICHED, SCORED, SKIPPED
+from .ledger import ENRICHED, HELD, SCORED, SKIPPED
 from .llm import BudgetExceeded, LLMError
 from .llm.score import PROMPT_VERSION, score_posting
 from .pipeline import RunStats, enrich, sync
@@ -50,7 +50,7 @@ def set_cutoff_in_yaml(text: str, cutoff: int) -> str:
 
 def _candidates(ctx: Context, need: int, rescore: bool) -> list[dict]:
     led = ctx.ledger
-    rows = led.postings_in([ENRICHED, SCORED]) + [r for r in led.postings_in([SKIPPED]) if r.reason == "low_fit"]
+    rows = led.postings_in([ENRICHED, SCORED, HELD]) + [r for r in led.postings_in([SKIPPED]) if r.reason == "low_fit"]
     out = []
     calibration = []          # score without the old examples, so they cannot bias the new ones
     for r in rows:

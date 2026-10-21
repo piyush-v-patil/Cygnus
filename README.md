@@ -85,6 +85,10 @@ When `writeback: true`, a submitted application sets `status: applied`, `applied
 
 Only these short codes and dates are written, because the repository is public. There is one commit per run or review session, plus a flush every 25 changes. Failed writes are retried next time.
 
+Postings scored below `fit.cutoff` are **held**, not skipped (`fit.low_fit: hold`, the default): job-monitor still shows them as new, and every run re-checks them against the current cutoff from their stored score, for free, so lowering the cutoff (or adding a resume that fits them better) brings them back. `fit.low_fit: skip` drops them for good and writes `skip / low_fit`. Switching back to `hold` releases earlier low-fit skips and undoes the `skip` marks Cygnus wrote for them (never a status you set yourself).
+
+Narrowing `filters:` (for example `roles: [software]`) takes effect on the next run for postings already scored too: they are left where they are, not scored or filled, and come back if you widen the filters again.
+
 Three things are not written back:
 
 - `no_h1b_record` (rule-stage skips are re-checked on every run, and job-monitor's README notes a `null` there can be a data gap).

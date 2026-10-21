@@ -107,9 +107,10 @@ def test_low_fit_and_claude_blockers(make_ctx, transport):
     sync(ctx, st)
     enrich(ctx, st, None, clients()[0])
     assert score(ctx, st) == []
-    assert ctx.ledger.get("greenhouse:acme:1001").reason == "low_fit"
+    # fit.low_fit: hold (default) parks it instead of skipping it
+    assert ctx.ledger.get("greenhouse:acme:1001").state == "held"
     assert ctx.ledger.get("ashby:gamma:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").reason == "us_person_required"
-    assert st.as_dict()["skipped_by_reason"]["low_fit"] >= 1
+    assert st["held"] >= 1
 
 
 def test_budget_stops_new_calls(make_ctx, transport):
@@ -208,3 +209,71 @@ def test_score_prompt_contains_calibration_and_profile(make_ctx, transport):
     system = transport.calls[0]["system"][0]["text"]
     assert "WOULD apply: Backend Eng at X" in system and "would NOT apply: Staff Eng at Y" in system
     assert "Needs sponsorship (now or later): yes" in system
+
+
+def _low_scores(transport, score=40):
+    transport.responder = lambda p: {"score": score, "role_family": "backend", "reasons": ["weak"],
+                                     "blockers": [], "yoe_required": None}
+
+
+def test_held_postings_unheld_for_free_when_cutoff_drops(make_ctx, transport):
+    _low_scores(transport)
+    ctx = make_ctx(secrets={"GITHUB_TOKEN": "t"})
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    led = ctx.ledger
+    assert led.get("greenhouse:acme:1001").state == "held"
+    assert led.pending_writebacks(ctx.profile.sources[0].label) == [] or all(
+        p["change"].get("skip_reason") != "low_fit" for p in led.pending_writebacks(ctx.profile.sources[0].label))
+    calls = len(transport.calls)
+    ctx.profile.fit.cutoff = 30
+    st = RunStats()
+    assert "greenhouse:acme:1001" in score(ctx, st)
+    assert len(transport.calls) == calls and st["unheld"] >= 1          # no new Claude calls
+    assert "greenhouse:acme:1001" in fill_candidates(ctx, None)
+
+
+def test_low_fit_skip_policy_still_skips(make_ctx, transport):
+    from .conftest import base_profile
+    _low_scores(transport)
+    ctx = make_ctx(base_profile(fit={"cutoff": 65, "low_fit": "skip"}), secrets={"GITHUB_TOKEN": "t"})
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    assert ctx.ledger.get("greenhouse:acme:1001").reason == "low_fit"
+    changes = [p["change"] for p in ctx.ledger.pending_writebacks(ctx.profile.sources[0].label)]
+    assert {"status": "skip", "skip_reason": "low_fit", "skipped_by": "autoapply"} in changes
+
+
+def test_earlier_low_fit_skips_are_released_and_unmarked(make_ctx, transport):
+    from autoapply.pipeline import release_low_fit
+    from autoapply.writeback import apply_changes
+    from .conftest import base_profile
+    _low_scores(transport)
+    ctx = make_ctx(base_profile(fit={"cutoff": 65, "low_fit": "skip"}), secrets={"GITHUB_TOKEN": "t"})
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    ctx.profile.fit.low_fit = "hold"
+    st = RunStats()
+    release_low_fit(ctx, st)
+    assert ctx.ledger.get("greenhouse:acme:1001").state == "held" and st["released"] >= 1
+    undo = ctx.ledger.pending_writebacks(ctx.profile.sources[0].label)[-1]["change"]
+    doc = {"jobs": {"a": {"status": "skip", "skip_reason": "low_fit", "skipped_by": "autoapply", "title": "T"},
+                    "b": {"status": "applied", "applied_on": "2026-10-20"}}}
+    apply_changes(doc, {"a": undo, "b": undo})
+    assert doc["jobs"]["a"] == {"status": "new", "title": "T"}               # our skip undone
+    assert doc["jobs"]["b"] == {"status": "applied", "applied_on": "2026-10-20"}  # the user's mark kept
+
+
+def test_narrowed_roles_apply_to_already_scored_postings(make_ctx, transport):
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    assert "greenhouse:acme:1001" in fill_candidates(ctx, None)             # role: backend
+    ctx.profile.filters.roles = ["software"]
+    assert "greenhouse:acme:1001" not in fill_candidates(ctx, None)
+    ctx.profile.filters.roles = ["software", "backend"]
+    assert "greenhouse:acme:1001" in fill_candidates(ctx, None)             # nothing was lost
