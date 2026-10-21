@@ -336,7 +336,8 @@ def ensure_anthropic_key(paths: Paths, io: IO) -> str | None:
     return key
 
 
-def step_simplify(paths: Paths, io: IO) -> None:
+def step_simplify(paths: Paths, io: IO) -> str:
+    """Install the extension and log in. Returns the data-consent choice for browser.simplify_consent."""
     from .browser.simplify import EXTENSION_ID
     io.say("\n== Simplify Copilot ==")
     found = find_installed_simplify(EXTENSION_ID)
@@ -351,15 +352,20 @@ def step_simplify(paths: Paths, io: IO) -> None:
             io.say(f"  Downloaded Simplify {v}.")
         else:
             io.say("  Install Simplify Copilot in Chrome, Brave or Edge (chromewebstore.google.com), then rerun setup.")
-            return
+            return "essentials"
     except Exception as e:  # noqa: BLE001
         io.say(f"  Could not install the extension: {e}")
-        return
+        return "essentials"
+    io.say("  Simplify asks once per browser start whether it may collect anonymous usage and error data\n"
+           "  ('Accept') or only what autofill needs ('Essentials only'). The tool answers it for you.")
+    consent = "accept" if io.choose("  Your answer", ["essentials", "accept"], "essentials") == "accept" else "essentials"
     if io.yes("Open the tool's browser now to log in to Simplify?", True):
-        login_browser(paths, io)
+        login_browser(paths, io, consent=consent)
+    return consent
 
 
-def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path: str | None = None) -> None:
+def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path: str | None = None,
+                  consent: str = "essentials") -> None:
     """Open the tool's own Chromium (with Simplify and its saved login) until the user presses Enter."""
     import asyncio
     from .browser.simplify import LOGIN_URL
@@ -371,16 +377,16 @@ def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path:
             ctx = await pw.chromium.launch_persistent_context(
                 str(paths.browser_profile), headless=False, no_viewport=True,
                 executable_path=executable_path or None,
+                ignore_default_args=["--disable-extensions"],
                 args=[f"--disable-extensions-except={ext}", f"--load-extension={ext}"])
+            from .browser.launch import settle_extension
+            await settle_extension(ctx, consent)
             page = await ctx.new_page()
             await page.goto(url or LOGIN_URL)
-            for p in list(ctx.pages):          # Simplify's first-run tutorial tab
-                if p.url.startswith("chrome-extension://"):
-                    await p.close()
-            io.say("  In the browser window: log in to Simplify, then open any job application page,\n"
-                   "  click Accept on Simplify's 'Before you autofill' card, and complete your Simplify\n"
-                   "  profile there (work authorization, sponsorship, demographics, salary, education,\n"
-                   "  experience). Simplify's answers are what most forms get.")
+            io.say("  In the browser window: log in to Simplify and check your Simplify profile is\n"
+                   "  complete (work authorization, sponsorship, demographics, salary, education,\n"
+                   "  experience). Simplify's answers are what most forms get. Its 'Before you\n"
+                   "  autofill' data-consent card is answered for you from browser.simplify_consent.")
             await asyncio.to_thread(io.ask, "  Press Enter here when you are done")
             await ctx.close()
     asyncio.run(go())
@@ -408,7 +414,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     filters, visa = step_preferences(io, draft)
     sources = step_sources(paths, io)
     discord = step_discord(paths, io)
-    step_simplify(paths, io)
+    consent = step_simplify(paths, io)
     io.say("\n== Fit ==")
     cutoff = int(io.ask("Fit cutoff 0-100 (postings scoring lower are skipped)", "65"))
     mode = io.choose("Schedule", ["manual", "daily", "twice_daily"], "daily")
@@ -418,7 +424,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     data = {
         "sources": sources or [{"type": "csv", "path": str(paths.root / "jobs.csv")}],
         "filters": filters, "visa": visa, "fit": {"cutoff": cutoff, "order": "newest_first"},
-        "resumes": resumes, "browser": {"parallel_tabs": 3, "headless": False},
+        "resumes": resumes, "browser": {"parallel_tabs": 3, "headless": False, "simplify_consent": consent},
         "llm": {"score_model": "claude-haiku-5-5", "write_model": "claude-sonnet-5-5", "monthly_budget_usd": 20},
         "schedule": {"mode": mode, "times": times},
         "notifications": {"discord": discord,

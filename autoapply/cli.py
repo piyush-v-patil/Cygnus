@@ -164,11 +164,12 @@ def _dispatch(args, paths: Paths) -> int:
             print(f"Simplify is not installed at {paths.extension}. Run `autoapply setup` first.", file=sys.stderr)
             return 1
         try:
-            exe = Context(paths).profile.browser.executable_path
+            bcfg = Context(paths).profile.browser
+            exe, consent = bcfg.executable_path, bcfg.simplify_consent
         except ConfigError:
-            exe = None
+            exe, consent = None, "essentials"
         with RunLock(paths.lock):          # one browser on this profile at a time
-            login_browser(paths, IO(), url=args.url, executable_path=exe)
+            login_browser(paths, IO(), url=args.url, executable_path=exe, consent=consent)
         return 0
 
     if args.cmd == "status":

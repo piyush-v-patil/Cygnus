@@ -27,6 +27,46 @@ CONSENT_TEXT = "Before you autofill"         # first-run data-consent card
 LOGIN_URL = "https://simplify.jobs/auth/login"
 
 
+CONSENT_KEY = "simplify_data_consent"   # chrome.storage.local, read by the "Before you autofill" card
+
+
+def consent_value(choice: str) -> dict:
+    """What Simplify's own buttons store: Accept -> all true, Essentials only -> analytics off."""
+    on = choice == "accept"
+    return {"privacy": True, "userEvents": on, "analyticsEvents": on, "debugging": on}
+
+
+async def apply_consent(context, choice: str, timeout_s: float = 10) -> bool:
+    """Re-apply the user's data-consent choice after Simplify resets it.
+
+    An extension loaded with --load-extension is installed afresh on every
+    browser start, so Simplify's onInstalled("install") handler sets the
+    consent to {} each time and the card would ask again on every launch.
+    VERIFIED 2026-10-21 against Simplify Copilot 3.1.10. Returns True when set.
+    """
+    workers = [w for w in context.service_workers if w.url.startswith("chrome-extension://")]
+    if not workers:
+        return False
+    sw = workers[0]
+    value = consent_value(choice)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    # wait for the install handler's reset to land, so it cannot overwrite ours
+    while loop.time() < deadline:
+        cur = await sw.evaluate(f"chrome.storage.local.get('{CONSENT_KEY}')")
+        if CONSENT_KEY in (cur or {}):
+            break
+        await asyncio.sleep(0.25)
+    for _ in range(3):
+        await sw.evaluate("v => chrome.storage.local.set({%s: v})" % json.dumps(CONSENT_KEY), value)
+        await asyncio.sleep(0.5)
+        cur = await sw.evaluate(f"chrome.storage.local.get('{CONSENT_KEY}')")
+        if (cur or {}).get(CONSENT_KEY) == value:
+            return True
+    log.warning("could not re-apply Simplify's data-consent choice")
+    return False
+
+
 class SimplifyError(Exception):
     """Autofill could not run. `kind` is a short code for the Stuck reason."""
 
@@ -91,7 +131,7 @@ async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
         raise SimplifyError("simplify_onboarding", "Simplify profile onboarding is not finished")
     if state == "consent":
         raise SimplifyError("simplify_consent",
-                            "Simplify is asking for one-time data consent - accept it in the tool's browser")
+                            "Simplify's data-consent card is still showing (the tool's automatic answer did not stick)")
     btn = page.locator(FILL_BUTTON).first
     try:
         await btn.evaluate("el => el.click()")   # works while the panel is collapsed, too
@@ -130,10 +170,10 @@ async def health_probe(ctx, rep) -> None:
     msgs = {
         "ready": (True, f"Simplify {version} loaded and logged in{note}"),
         "not_loaded": (False, "Chromium started but the Simplify extension did not load"),
-        "logged_out": (False, "Simplify is logged out - run `autoapply setup` (step: Simplify login)"),
+        "logged_out": (False, "Simplify is logged out - run `autoapply browser` and log in"),
         "onboarding": (False, "finish your Simplify profile at simplify.jobs, then retry"),
-        "consent": (False, "Simplify wants one-time data consent: open the tool's browser "
-                           "(`autoapply setup`, Simplify step) and click Accept"),
+        "consent": (False, "Simplify's data-consent card is still showing although the tool answers it "
+                           "on every launch - Simplify may have changed; see browser/simplify.py apply_consent"),
         "missing": (False, "Simplify panel did not appear on a Greenhouse page"),
     }
     ok, msg = msgs[state]

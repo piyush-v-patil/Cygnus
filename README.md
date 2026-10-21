@@ -35,7 +35,7 @@ autoapply setup
 - **Work authorization.** Your visa answers are **never saved until you confirm them**. They decide which postings are skipped, and they are checked against what Simplify fills on every form.
 - **Sources.** Your job-monitor fork (with the GitHub token) and/or a CSV.
 - **Discord.** A webhook, checked with a test message.
-- **Simplify.** The wizard copies the extension from your Chrome, Brave or Edge profile (or downloads it from the Chrome Web Store). It then opens the tool's browser so you can log in to Simplify **once**, click *Accept* on Simplify's one-time "Before you autofill" card, and finish your Simplify profile: work authorization, sponsorship, demographics, salary, education and experience. Most form answers come from Simplify.
+- **Simplify.** The wizard copies the extension from your Chrome, Brave or Edge profile (or downloads it from the Chrome Web Store). It asks once how to answer Simplify's "Before you autofill" data-consent card (Simplify asks again on every browser start, so the tool answers it for you each time from `browser.simplify_consent`). It then opens the tool's browser so you can log in to Simplify **once** and finish your Simplify profile: work authorization, sponsorship, demographics, salary, education and experience. Most form answers come from Simplify.
 - **Fit cutoff.** Default 65, with an optional calibration run.
 - **Schedule.** Optional; see below.
 
@@ -158,7 +158,8 @@ Posting states: `discovered → filtered_out | unsupported | enriched → closed
 
 | Symptom | Fix |
 |---|---|
-| Health: *Simplify is logged out* / *wants one-time data consent* | `autoapply setup` → Simplify step, log in and click Accept in the tool's browser. |
+| Health: *Simplify is logged out* | `autoapply browser`, log in to Simplify, press Enter. |
+| Simplify's "Before you autofill" card keeps coming back | Expected from Simplify itself (it resets on every browser start); the tool answers it from `browser.simplify_consent`. If it still shows, Simplify changed: see `apply_consent` in `autoapply/browser/simplify.py`. |
 | Many forms Stuck with `simplify_*` after a Simplify update | Re-run the Simplify step of `autoapply setup` to copy the new version. If the widget changed, update the selectors at the top of `autoapply/browser/simplify.py`. |
 | Health: *token rejected (expired?)* | Make a new fine-grained token and put it in `secrets.env` as `GITHUB_TOKEN=`. Pending write-backs are retried automatically. |
 | Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. |
