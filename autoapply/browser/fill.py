@@ -446,10 +446,14 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             log.exception("fill %s crashed", key)
             fail(ctx, key, "fill", f"{type(e).__name__}: {e}", stats)
         finally:
-            if page is not None and not getattr(ctx, "keep_tabs", False):
-                await page.close()
-            elif page is not None:
-                ctx.open_tabs[key] = page
+            # with `run --review`, a filled (or stuck) form stays open so approval can submit
+            # it as it stands; past keep_tabs_max it closes and approval refills it instead
+            lane = led.get(key).state
+            if page is not None and not page.is_closed():
+                if lane in (READY, NEEDS_INPUT, STUCK) and ctx.can_keep_tab():
+                    ctx.remember_tab(key, page)
+                else:
+                    await page.close()
 
     async def worker(bs):
         while not state["stop"]:

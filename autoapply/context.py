@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from functools import cached_property
 from pathlib import Path
 
@@ -23,6 +24,7 @@ class Context:
         self._llm_transport = llm_transport
         self.test_mode = test_mode
         self.open_tabs: dict = {}            # posting_key -> filled page, in review sessions
+        self.tab_opened: dict = {}           # posting_key -> time.monotonic() when it was filled
         self.keep_tabs = False
         self.simplify_probe_pending = False
         self.browser_overrides: dict | None = None
@@ -74,6 +76,33 @@ class Context:
         if src is None or not src.repo or not self.secrets.get("GITHUB_TOKEN"):
             return None
         return Writeback(self.ledger, src.label, src.repo, src.branch, GitHub(self.secrets["GITHUB_TOKEN"]))
+
+    # ---- filled tabs kept open for review (`run --review`, review sessions) ----
+    def live_tabs(self) -> dict:
+        for k in [k for k, p in self.open_tabs.items() if p.is_closed()]:
+            self.open_tabs.pop(k, None)
+            self.tab_opened.pop(k, None)
+        return self.open_tabs
+
+    def can_keep_tab(self) -> bool:
+        return self.keep_tabs and len(self.live_tabs()) < self.profile.browser.keep_tabs_max
+
+    def remember_tab(self, key: str, page, fresh: bool = True) -> None:
+        self.open_tabs[key] = page
+        if fresh or key not in self.tab_opened:
+            self.tab_opened[key] = time.monotonic()
+
+    def take_tab(self, key: str):
+        """(page, age in seconds) of a live tab, removed from the registry; (None, None) if none."""
+        page = self.open_tabs.pop(key, None)
+        opened = self.tab_opened.pop(key, None)
+        if page is None or page.is_closed():
+            return None, None
+        return page, (time.monotonic() - opened) if opened is not None else None
+
+    def has_live_tab(self, key: str) -> bool:
+        p = self.open_tabs.get(key)
+        return p is not None and not p.is_closed()
 
     @property
     def never_submit(self) -> bool:

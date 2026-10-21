@@ -18,7 +18,7 @@ a{color:var(--accent)}main{max-width:1100px;margin:0 auto;padding:16px}.flash{ba
 th{color:var(--muted);font-weight:500}.val{white-space:pre-wrap;word-break:break-word;max-width:520px}
 .chip{display:inline-block;padding:1px 7px;border-radius:9px;font-size:12px;white-space:nowrap}
 .chip.simplify{background:var(--chip-simplify)}.chip.claude,.chip.cover_letter{background:var(--chip-claude)}.chip.user{background:var(--chip-user)}
-.chip.answer_bank{background:var(--chip-bank)}.chip.resume{background:var(--chip-resume)}.ev{color:var(--muted);font-size:12px;margin-top:2px}
+.chip.answer_bank{background:var(--chip-bank)}.chip.live{background:var(--chip-user);font-weight:600}.chip.resume{background:var(--chip-resume)}.ev{color:var(--muted);font-size:12px;margin-top:2px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}button{font:inherit;padding:7px 12px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--bad)}
 .q{margin:10px 0}.q label{display:block;font-weight:600;margin-bottom:4px}.q .why{color:var(--muted);font-weight:400;font-size:12px}
@@ -32,6 +32,7 @@ details summary{cursor:pointer;color:var(--muted);margin-top:6px}.stuck{color:va
 <nav>{% for l in ['ready','needs_input','stuck'] %}<a href="/lane/{{l}}" class="{{'on' if lane==l}}">{{lane_titles[l]}}<span class="badge">{{counts[l]}}</span></a>{% endfor %}
 <a href="/history" class="{{'on' if lane=='history'}}">History</a></nav>
 {% if test_mode %}<span class="test">TEST MODE — nothing is submitted</span>{% endif %}
+{% if live_tabs %}<span class="spend" style="margin-left:0">{{live_tabs}} form{{'s' if live_tabs != 1}} open in the tool's browser</span>{% endif %}
 <span class="spend">Spend this month: <b>${{ '%.2f' % spend }}</b> of ${{ '%.2f' % budget }}</span></header>
 <main>{% if flash %}<div class="flash">{{flash}}</div>{% endif %}{% block body %}{% endblock %}</main>
 </body></html>
