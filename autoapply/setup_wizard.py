@@ -63,31 +63,49 @@ class IO:
 
 
 # ------------------------------------------------------------ Simplify --
-def chrome_extension_roots() -> list[Path]:
+# Chromium-family browsers install Chrome Web Store extensions under the same id,
+# so Simplify can be copied from whichever of them the user has.
+BROWSER_DIRS = {
+    "win32": [("Chrome", ("Google", "Chrome", "User Data")),
+              ("Brave", ("BraveSoftware", "Brave-Browser", "User Data")),
+              ("Edge", ("Microsoft", "Edge", "User Data")),
+              ("Chromium", ("Chromium", "User Data"))],
+    "darwin": [("Chrome", ("Google", "Chrome")), ("Brave", ("BraveSoftware", "Brave-Browser")),
+               ("Edge", ("Microsoft Edge",)), ("Chromium", ("Chromium",))],
+    "linux": [("Chrome", ("google-chrome",)), ("Brave", ("BraveSoftware", "Brave-Browser")),
+              ("Edge", ("microsoft-edge",)), ("Chromium", ("chromium",))],
+}
+
+
+def browser_extension_roots() -> list[tuple[str, Path]]:
+    """(browser name, <profile>/Extensions) for every installed Chromium-family browser profile."""
     home = Path.home()
     if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")) / "Google" / "Chrome" / "User Data"
+        base, key = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")), "win32"
     elif sys.platform == "darwin":
-        base = home / "Library" / "Application Support" / "Google" / "Chrome"
+        base, key = home / "Library" / "Application Support", "darwin"
     else:
-        base = home / ".config" / "google-chrome"
-    if not base.exists():
-        return []
-    return [p / "Extensions" for p in base.iterdir() if (p / "Extensions").is_dir()]
+        base, key = home / ".config", "linux"
+    out = []
+    for name, parts in BROWSER_DIRS[key]:
+        root = base.joinpath(*parts)
+        if root.is_dir():
+            out += [(name, p / "Extensions") for p in root.iterdir() if (p / "Extensions").is_dir()]
+    return out
 
 
 def _vkey(name: str) -> tuple:
     return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[._]", name))
 
 
-def find_installed_simplify(ext_id: str) -> Path | None:
-    """The newest installed version folder of the extension in any Chrome profile."""
+def find_installed_simplify(ext_id: str) -> tuple[str, Path] | None:
+    """(browser, folder) of the newest installed version of the extension in any browser profile."""
     found = []
-    for root in chrome_extension_roots():
+    for browser, root in browser_extension_roots():
         d = root / ext_id
         if d.is_dir():
-            found += [v for v in d.iterdir() if (v / "manifest.json").exists()]
-    return max(found, key=lambda p: _vkey(p.name)) if found else None
+            found += [(browser, v) for v in d.iterdir() if (v / "manifest.json").exists()]
+    return max(found, key=lambda bv: _vkey(bv[1].name)) if found else None
 
 
 def install_extension(src: Path, dest: Path) -> str:
@@ -300,16 +318,18 @@ def ensure_anthropic_key(paths: Paths, io: IO) -> str | None:
 def step_simplify(paths: Paths, io: IO) -> None:
     from .browser.simplify import EXTENSION_ID
     io.say("\n== Simplify Copilot ==")
-    src = find_installed_simplify(EXTENSION_ID)
+    found = find_installed_simplify(EXTENSION_ID)
     try:
-        if src is not None:
+        if found is not None:
+            browser, src = found
             v = install_extension(src, paths.extension)
-            io.say(f"  Copied Simplify {v} from your Chrome profile.")
-        elif io.yes("Simplify was not found in Chrome. Download it from the Chrome Web Store instead?", True):
+            io.say(f"  Copied Simplify {v} from your {browser} profile.")
+        elif io.yes("Simplify was not found in Chrome, Brave or Edge. Download it from the Chrome Web Store instead?",
+                    True):
             v = download_extension(EXTENSION_ID, paths.extension)
             io.say(f"  Downloaded Simplify {v}.")
         else:
-            io.say("  Install Simplify Copilot in Chrome (chromewebstore.google.com), then rerun setup.")
+            io.say("  Install Simplify Copilot in Chrome, Brave or Edge (chromewebstore.google.com), then rerun setup.")
             return
     except Exception as e:  # noqa: BLE001
         io.say(f"  Could not install the extension: {e}")
