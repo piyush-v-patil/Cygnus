@@ -13,7 +13,7 @@ import json
 import logging
 from pathlib import Path
 
-from .fields import read_values, wait_stable
+from .fields import read_values, safe_evaluate, wait_stable
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ async def panel_state(page, timeout_s: float = 20) -> str:
 
 
 async def _has_text(page, text: str) -> bool:
-    return bool(await page.evaluate(
+    return bool(await safe_evaluate(page,
         """([host, text]) => [...document.querySelectorAll(host)]
              .some(h => h.shadowRoot && h.shadowRoot.textContent.includes(text))""", [HOST, text]))
 

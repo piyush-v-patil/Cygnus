@@ -72,8 +72,48 @@ class Field:
         return asdict(self)
 
 
+NAVIGATED = ("Execution context was destroyed", "navigation", "Target closed", "frame was detached")
+
+
+async def safe_evaluate(page, js: str, arg=None, attempts: int = 4):
+    """page.evaluate that survives the page navigating underneath it.
+
+    Boards re-route client-side and Simplify can redirect a form to its own
+    preferred URL, which destroys the JS context mid-call; wait for the new
+    document and try again.
+    """
+    for i in range(attempts):
+        try:
+            return await page.evaluate(js, arg)
+        except Exception as e:  # noqa: BLE001 - Playwright's Error type
+            if i == attempts - 1 or not any(n in str(e) for n in NAVIGATED) or page.is_closed():
+                raise
+            log.info("    the page navigated while it was being read; reading it again")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(1.0 + i)
+
+
+async def safe_screenshot(page, path) -> str | None:
+    """Full-page screenshot, else the visible part, else nothing - never an exception.
+
+    Very tall pages exceed what Chromium can capture in one image ("Unable to
+    capture screenshot"); a missing picture must never fail an application.
+    """
+    for full in (True, False):
+        try:
+            await page.screenshot(path=str(path), full_page=full, timeout=30000)
+            return str(path)
+        except Exception as e:  # noqa: BLE001
+            log.debug("screenshot (full_page=%s) failed: %s", full, str(e).splitlines()[0][:200])
+    log.warning("could not take a screenshot of %s", page.url if not page.is_closed() else "a closed tab")
+    return None
+
+
 async def enumerate_fields(page, hints: dict | None = None) -> list[Field]:
-    raw = await page.evaluate(ENUMERATE_JS, hints or {})
+    raw = await safe_evaluate(page, ENUMERATE_JS, hints or {})
     out = []
     for r in raw:
         out.append(Field(key=r["key"], label=r.get("label") or "", kind=r["kind"],
@@ -102,7 +142,7 @@ async def combobox_options(page, f: Field, limit: int = 200) -> list[str]:
     try:
         await loc.click(timeout=5000)
         await page.wait_for_timeout(400)
-        opts = await page.evaluate(
+        opts = await safe_evaluate(page,
             """() => [...document.querySelectorAll('[role=option]')]
                  .filter(o => o.offsetParent !== null).map(o => o.textContent.replace(/\\s+/g,' ').trim())
                  .filter(Boolean)""")
