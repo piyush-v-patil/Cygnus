@@ -190,3 +190,13 @@ def test_simplify_found_in_brave(tmp_path, monkeypatch):
     browser, src = w.find_installed_simplify("abc")
     assert browser == "Brave" and src.name == "3.1.10_0"
     assert w.install_extension(src, tmp_path / "out") == "3.1.10"
+
+
+def test_repo_and_branch_prompts_reject_yes(capsys):
+    from autoapply.setup_wizard import IO, ask_branch, ask_repo
+    answers = iter(["y", "https://github.com/Piyush-v-patil/job-monitor/", "yes", ""])
+    said = []
+    io = IO(ask=lambda p: next(answers), say=said.append)
+    assert ask_repo(io, "repo", "Piyush-v-patil/job-monitor") == "Piyush-v-patil/job-monitor"
+    assert ask_branch(io, "Branch", "main") == "main"
+    assert len(said) == 2 and "'y' is not owner/repo" in said[0]

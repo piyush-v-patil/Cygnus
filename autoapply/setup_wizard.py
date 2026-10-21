@@ -246,14 +246,35 @@ def step_preferences(io: IO, draft: dict | None) -> tuple[dict, dict]:
     return filters, visa
 
 
+YES_NO = {"y", "yes", "n", "no"}
+REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
+def ask_repo(io: IO, prompt: str, default: str) -> str:
+    """A text prompt answered with 'y' would save 'y' as the repo name; ask again instead."""
+    while True:
+        v = io.ask(prompt, default).strip().removeprefix("https://github.com/").strip("/")
+        if REPO_RE.fullmatch(v):
+            return v
+        io.say(f"  {v!r} is not owner/repo (for example {default}). Press Enter to use {default}.")
+
+
+def ask_branch(io: IO, prompt: str, default: str) -> str:
+    while True:
+        v = io.ask(prompt, default).strip()
+        if v and v.lower() not in YES_NO and " " not in v:
+            return v
+        io.say(f"  {v!r} is not a branch name. Press Enter to use {default}.")
+
+
 def step_sources(paths: Paths, io: IO) -> list[dict]:
     from .config import SourceCfg
     from .sources import CsvSource, JobMonitorSource
     io.say("\n== Job sources ==")
     sources = []
     if io.yes("Use your job-monitor fork on GitHub?", True):
-        repo = io.ask("job-monitor repo (owner/repo)", "Piyush-v-patil/job-monitor")
-        branch = io.ask("Branch", "main")
+        repo = ask_repo(io, "job-monitor repo (owner/repo) - press Enter for the default", "Piyush-v-patil/job-monitor")
+        branch = ask_branch(io, "Branch - press Enter for the default", "main")
         wb = io.yes("Mark applied/skipped jobs back in job-monitor (needs a GitHub token with Contents: write)?", True)
         token = load_secrets(paths).get("GITHUB_TOKEN")
         if wb and not token:
