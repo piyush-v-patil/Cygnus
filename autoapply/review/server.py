@@ -42,7 +42,7 @@ def _ago(ts: str | None) -> str:
 
 
 class Session:
-    """Browser + bookkeeping for one review session."""
+    """Browser + bookkeeping for one review session (shared with the fill in `run --review`)."""
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -92,6 +92,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         p = led.get(key)
         sc = led.score(key) or {}
         return {"app": app_row, "p": p.data if p else {}, "state": p.state if p else "",
+                "live": ctx.has_live_tab(key),
                 "score": sc, "waited": _ago(app_row.get("updated_at")),
                 "plan": app_row.get("fill_plan") or [], "missing": app_row.get("missing") or []}
 
@@ -101,7 +102,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         return TEMPLATES.TemplateResponse(request, name, {
             "counts": counts, "lane_titles": LANE_TITLES, "spend": led.month_spend(),
             "budget": ctx.profile.llm.monthly_budget_usd, "csrf": sess.csrf, "source_label": SOURCE_LABEL,
-            "test_mode": ctx.never_submit, "flash": request.query_params.get("msg"), **kw})
+            "test_mode": ctx.never_submit, "flash": request.query_params.get("msg"),
+            "live_tabs": len(ctx.live_tabs()), **kw})
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -177,8 +179,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         key = _key(app_id)
         actions.reject(ctx, key)
-        tab = ctx.open_tabs.pop(key, None)
-        if tab is not None and not tab.is_closed():
+        tab, _ = ctx.take_tab(key)
+        if tab is not None:
             await tab.close()
         return _back(lane, "Rejected.")
 
@@ -194,6 +196,12 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                 vals[k[3:]] = "; ".join(v for v in many if v) if len(many) > 1 else (many[0] or "")
         res = actions.save_answers(ctx.ledger, ctx.answers, key, vals)
         msg = f"Saved. {res['still_missing']} question(s) left." if res["still_missing"] else "Saved."
+        if res.get("added") and ctx.live_tabs():
+            from ..browser.submit import type_into_tab
+            async with sess.lock:
+                typed = [k for k, entries in res["added"].items() if await type_into_tab(ctx, k, entries)]
+            if typed:
+                msg += f" Typed into {len(typed)} open tab(s)."
         others = [k for k in res["ready"] if k != key]
         if others:
             msg += f" {len(others)} other application(s) moved to Ready."
@@ -210,7 +218,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         from ..browser.replay import replay
         async with sess.lock:
             bs = await sess.browser()
-            tab = ctx.open_tabs.get(key)
+            tab = ctx.open_tabs.get(key) if ctx.has_live_tab(key) else None
             note = "Brought the form to the front."
             if tab is None or tab.is_closed():
                 try:
@@ -223,7 +231,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                     tab = getattr(e, "page", None)
                     note = f"Reopened; finish it by hand ({type(e).__name__})."
                 if tab is not None:
-                    ctx.open_tabs[key] = tab
+                    ctx.remember_tab(key, tab)
             if tab is not None:
                 await tab.bring_to_front()
         return _back(lane, note)
@@ -243,8 +251,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         key = _key(app_id)
         actions.give_up(ctx, key)
-        tab = ctx.open_tabs.pop(key, None)
-        if tab is not None and not tab.is_closed():
+        tab, _ = ctx.take_tab(key)
+        if tab is not None:
             await tab.close()
         return _back(STUCK, "Gave up on it.")
 
@@ -261,21 +269,65 @@ def finish_session(ctx, sess: Session) -> None:
     ctx.ledger.end_run(run_id, {"submitted": sess.submitted, "submitted_manual": sess.manual})
 
 
-def serve(ctx, port: int = 8765, open_browser: bool = True) -> int:
+async def _serve(app, port: int, open_browser: bool) -> None:
     import uvicorn
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio")
+    server = uvicorn.Server(config)
+    url = f"http://127.0.0.1:{port}/"
+    print(f"Review queue: {url}  (Ctrl+C to end the session)")
+    if open_browser:
+        asyncio.get_running_loop().call_later(1.0, webbrowser.open, url)
+    await server.serve()
 
+
+def run_and_review(ctx, limit: int | None = None, port: int = 8765, open_browser: bool = True) -> int:
+    """`autoapply run --review`: fill in the tool's browser, keep the filled tabs open,
+    then serve the review queue in the same session so approval submits those tabs
+    as they stand (anything without a live tab is refilled as usual)."""
+    from ..browser.fill import fill_many
+    from ..pipeline import run as run_pipeline
+
+    sess = Session(ctx)
+    app = create_app(ctx, sess, port)            # sets ctx.keep_tabs
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        bs = await sess.browser()
+
+        def fill_in_this_session(ctx_, keys, stats):
+            # the pipeline runs in a worker thread; the browser lives on this loop
+            asyncio.run_coroutine_threadsafe(fill_many(ctx_, keys, stats, session=bs), loop).result()
+
+        try:
+            counts = await asyncio.to_thread(run_pipeline, ctx, limit, False, fill_in_this_session)
+            from ..cli import _summary
+            print(_summary(counts))
+        except Exception as e:  # noqa: BLE001 - what is already queued can still be reviewed
+            log.exception("the run failed")
+            print(f"The run stopped early ({type(e).__name__}: {e}); opening the review queue anyway.")
+        kept = len(ctx.live_tabs())
+        print(f"{kept} filled form(s) are open in the tool's browser and will be submitted as they stand "
+              "when you approve them" + (" (test mode: nothing is submitted)." if ctx.never_submit else "."))
+        try:
+            await _serve(app, port, open_browser)
+        finally:
+            await sess.close()
+
+    try:
+        asyncio.run(main())
+    finally:
+        finish_session(ctx, sess)
+        print(f"Session over: {sess.submitted} submitted, {sess.manual} recorded as submitted by hand.")
+    return 0
+
+
+def serve(ctx, port: int = 8765, open_browser: bool = True) -> int:
     sess = Session(ctx)
     app = create_app(ctx, sess, port)
 
     async def main():
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio")
-        server = uvicorn.Server(config)
-        url = f"http://127.0.0.1:{port}/"
-        print(f"Review queue: {url}  (Ctrl+C to end the session)")
-        if open_browser:
-            asyncio.get_running_loop().call_later(1.0, webbrowser.open, url)
         try:
-            await server.serve()
+            await _serve(app, port, open_browser)
         finally:
             await sess.close()
 

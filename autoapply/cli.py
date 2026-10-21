@@ -105,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--limit", type=int, help="process at most N postings past the prefilter")
     r.add_argument("--no-fill", action="store_true", help="stop after scoring")
     r.add_argument("--test", action="store_true", help="never click Submit in this run")
+    r.add_argument("--review", action="store_true",
+                   help="keep the filled forms open and review them right away in the same session")
+    r.add_argument("--port", type=int, help="review page port (with --review)")
+    r.add_argument("--no-browser", action="store_true", help="with --review: do not open the review page")
     rv = sub.add_parser("review", help="open the review UI")
     rv.add_argument("--port", type=int)
     rv.add_argument("--no-browser", action="store_true", help="do not open the UI in a web browser")
@@ -212,6 +216,10 @@ def _dispatch(args, paths: Paths) -> int:
                 print(rep.render(), file=sys.stderr)
                 ctx.notifier.alert(rep.first_failure())
                 return 1
+            if args.review and not args.no_fill:
+                from .review.server import run_and_review
+                return run_and_review(ctx, limit=args.limit, port=args.port or ctx.profile.review.port,
+                                      open_browser=not args.no_browser)
             counts = run(ctx, limit=args.limit, no_fill=args.no_fill)
         print(_summary(counts))
         from .pipeline import status_report

@@ -130,6 +130,10 @@ class BrowserCfg(_Strict):
     simplify_consent: Literal["essentials", "accept"] = "essentials"
     autofill_timeout_s: float = 45
     form_timeout_s: float = 420          # one application, open to screenshot; then it goes to Stuck
+    # `autoapply run --review`: filled tabs stay open for approval (beyond the cap, or older
+    # than the age limit, approval refills the form from its saved plan as usual)
+    keep_tabs_max: int = Field(15, ge=0, le=60)
+    tab_max_age_min: float = 240
     page_timeout_s: float = 45
 
     @field_validator("headless")

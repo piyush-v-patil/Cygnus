@@ -12,7 +12,7 @@ from ..records import submission_dir, write_record
 from ..writeback import applied_change
 from .fields import enumerate_fields
 from .fill import Stuck, detect_blockers
-from .replay import replay, verify_plan
+from .replay import replay
 
 log = logging.getLogger(__name__)
 RECHECK_AFTER = timedelta(hours=24)
@@ -61,18 +61,47 @@ async def _form_problems_after_submit(page, hints: dict) -> str | None:
     return None
 
 
+async def live_tab_problems(page, app: dict, hints: dict) -> list[str]:
+    """Why a kept tab cannot be submitted as it stands ([] = it can).
+
+    Deliberately lenient about values: in a live tab the user may have changed
+    an answer by hand, and what is on the page is what gets sent (and saved).
+    """
+    if page.is_closed():
+        return ["the tab was closed"]
+    fields = await enumerate_fields(page, hints)
+    if not fields:
+        return ["the form is gone from the tab"]
+    problems = [f"required field {f.label!r} is empty" for f in fields
+                if f.required and f.empty and f.visible and f.kind != "file"]
+    for e in app.get("fill_plan") or []:
+        if e.get("kind") == "file" and e.get("source") in ("resume", "cover_letter"):
+            name = str(e["value"]).replace("\\", "/").rsplit("/", 1)[-1]
+            on_field = any(name.lower() in (f.value or "").lower() for f in fields if f.kind == "file")
+            if not on_field and not await page.get_by_text(name, exact=False).count():
+                problems.append(f"{name} is no longer attached")
+    return problems
+
+
 async def get_ready_page(ctx, bs, app: dict):
-    """The open, still-correct tab if there is one, otherwise a replayed one."""
+    """The kept tab if it is still good to send, otherwise a freshly refilled one."""
     key = app["posting_key"]
     hints = form_hints(parse_key(key).ats)
-    page = ctx.open_tabs.pop(key, None)
-    if page is not None and not page.is_closed():
+    page, age = ctx.take_tab(key)
+    if page is not None:
+        max_age = ctx.profile.browser.tab_max_age_min * 60
         try:
-            if not await verify_plan(page, app.get("fill_plan") or [], hints):
-                return page
+            if age is not None and age > max_age:
+                log.info("tab for %s is %d min old; refilling it", key, age // 60)
+            else:
+                problems = await live_tab_problems(page, app, hints)
+                if not problems:
+                    return page
+                log.info("kept tab for %s not usable (%s); refilling", key, "; ".join(problems))
         except Exception:  # noqa: BLE001 - a dead tab just means replay
             pass
-        await page.close()
+        if not page.is_closed():
+            await page.close()
     return await replay(ctx, bs, app)
 
 
@@ -157,8 +186,8 @@ async def mark_manual(ctx, bs, posting_key: str) -> dict:
     app = led.application(posting_key) or {}
     posting = dict(row.data)
     sub = submission_dir(ctx.paths.submissions, posting)
-    page = ctx.open_tabs.pop(posting_key, None)
-    if page is not None and not page.is_closed():
+    page, _ = ctx.take_tab(posting_key)
+    if page is not None:
         try:
             await page.screenshot(path=str(sub / "after_submit.png"), full_page=True)
         except Exception:  # noqa: BLE001
@@ -173,6 +202,27 @@ async def mark_manual(ctx, bs, posting_key: str) -> dict:
     if ctx.writeback is not None:
         ctx.writeback.queue(posting_key, applied_change())
     return {"state": SUBMITTED_MANUAL, "detail": str(sub)}
+
+
+async def type_into_tab(ctx, posting_key: str, entries: list[dict]) -> bool:
+    """Put review-page answers into the application's kept tab, if it has one.
+
+    False when there is no live tab, or the tab did not take an answer - then the
+    tab is closed and approval refills the form from the plan instead.
+    """
+    from .replay import apply_plan
+    if not entries or not ctx.has_live_tab(posting_key):
+        return False
+    page = ctx.open_tabs[posting_key]
+    problems = await apply_plan(ctx, page, entries, form_hints(parse_key(posting_key).ats))
+    if problems:
+        log.info("answers did not go into the tab for %s (%s); it will be refilled on approval",
+                 posting_key, "; ".join(problems))
+        page, _ = ctx.take_tab(posting_key)
+        if page is not None:
+            await page.close()
+        return False
+    return True
 
 
 def _source(app: dict, key: str) -> str:
@@ -193,7 +243,7 @@ def _stuck(ctx, key: str, err: Stuck, page) -> None:
 
 def _keep_or_close(ctx, key: str, page) -> None:
     # in a review session the tab stays open so "Open form" can bring it to the front
-    ctx.open_tabs[key] = page
+    ctx.remember_tab(key, page)
 
 
 def dump(obj) -> str:

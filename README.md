@@ -49,6 +49,7 @@ Before the first run:
 
 ```
 autoapply run [--limit N] [--no-fill] [--test]   # health → sync → filter → score → fill → queue → notify
+autoapply run --review [--limit N] [--test]      # same, then review right away with the filled forms still open
 autoapply review                                 # open the review queue + the tool's browser
 autoapply status                                 # counts per state, spend this month, last run
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
@@ -72,7 +73,9 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 | **Stuck** | A CAPTCHA, login wall, Simplify failure, failed upload, or a form that changed. **Open form** brings the tab up, or reopens it and refills it from the plan. Finish it by hand, then click **I submitted it** (a screenshot is recorded) or **Give up**. |
 | **History** | Every submitted application, with its saved copy. |
 
-Approval usually **replays** the form, because filled tabs don't survive hours of waiting. Replay reopens the page, runs Simplify again, and re-applies your saved answers and Claude's answers without new Claude calls. It then checks that every planned value is present before clicking Submit. If anything differs, the application goes to Stuck with the reason.
+**Review the live forms (`autoapply run --review`).** The run keeps each filled form open in the tool's browser (up to `browser.keep_tabs_max`, default 15) and then opens the review queue in the same session; cards with an open form show **open tab**. Approving submits that tab as it stands, so there is no refill and you can switch to the tab and change anything by hand first. What you send is what is on the page, and the saved copy records it. Answers you give in *Needs input* are typed straight into the open tab (and into any other open tab asking the same question). A tab that is gone, older than `browser.tab_max_age_min` (default 4 h), or now has an empty required field is refilled as below. Hand edits made in a tab are not added to the answer bank. Scheduled runs keep the plain `autoapply run`, which closes each form after filling.
+
+Otherwise approval **replays** the form, because filled tabs don't survive hours of waiting. Replay reopens the page, runs Simplify again, and re-applies your saved answers and Claude's answers without new Claude calls. It then checks that every planned value is present before clicking Submit. If anything differs, the application goes to Stuck with the reason.
 
 Each submission is saved under `submissions\<date>_<company>_<title>_<id>\`. The folder holds `form.png`, `after_submit.png`, `fields.json`, the resume and any cover letter, `job.txt` and `meta.json`.
 

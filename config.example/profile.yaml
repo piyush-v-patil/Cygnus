@@ -44,6 +44,10 @@ browser:
   parallel_tabs: 3
   headless: false                    # must stay false in v1
   # executable_path: null            # only to override Playwright's bundled Chromium
+  simplify_consent: essentials       # answer to Simplify's data-consent card: essentials | accept
+  form_timeout_s: 420                # one application longer than this goes to Stuck
+  keep_tabs_max: 15                  # `run --review`: filled forms kept open for approval
+  tab_max_age_min: 240               # older kept forms are refilled before submitting
 
 llm:
   score_model: claude-haiku-5-5
