@@ -177,3 +177,16 @@ def test_config_example_profile_is_valid():
     Profile.model_validate(yaml.safe_load((root / "profile.yaml").read_text()))
     from autoapply.config import AnswerBank
     assert AnswerBank(root / "answers.yaml").items[0].kind == "yes_no"
+
+
+def test_simplify_found_in_brave(tmp_path, monkeypatch):
+    from autoapply import setup_wizard as w
+    ext = tmp_path / ".config" / "BraveSoftware" / "Brave-Browser" / "Default" / "Extensions" / "abc"
+    for v in ("3.1.9_0", "3.1.10_0"):
+        (ext / v).mkdir(parents=True)
+        (ext / v / "manifest.json").write_text('{"version": "%s"}' % v[:-2])
+    monkeypatch.setattr(w.sys, "platform", "linux")
+    monkeypatch.setattr(w.Path, "home", classmethod(lambda cls: tmp_path))
+    browser, src = w.find_installed_simplify("abc")
+    assert browser == "Brave" and src.name == "3.1.10_0"
+    assert w.install_extension(src, tmp_path / "out") == "3.1.10"

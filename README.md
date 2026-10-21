@@ -16,7 +16,7 @@ Everything runs on your PC. The repository contains no personal data. Your resum
 
 ## Setup (Windows)
 
-You need Python 3.11+, Google Chrome with **Simplify Copilot** installed, an Anthropic API key, and (for write-back) a GitHub fine-grained token for your job-monitor fork with *Contents: read and write*.
+You need Python 3.11+, Chrome, Brave or Edge with **Simplify Copilot** installed, an Anthropic API key, and (for write-back) a GitHub fine-grained token for your job-monitor fork with *Contents: read and write*.
 
 ```powershell
 git clone https://github.com/piyush-v-patil/cygnus.git
@@ -35,7 +35,7 @@ autoapply setup
 - **Work authorization.** Your visa answers are **never saved until you confirm them**. They decide which postings are skipped, and they are checked against what Simplify fills on every form.
 - **Sources.** Your job-monitor fork (with the GitHub token) and/or a CSV.
 - **Discord.** A webhook, checked with a test message.
-- **Simplify.** The wizard copies the extension from your Chrome profile (or downloads it from the Chrome Web Store). It then opens the tool's browser so you can log in to Simplify **once**, click *Accept* on Simplify's one-time "Before you autofill" card, and finish your Simplify profile: work authorization, sponsorship, demographics, salary, education and experience. Most form answers come from Simplify.
+- **Simplify.** The wizard copies the extension from your Chrome, Brave or Edge profile (or downloads it from the Chrome Web Store). It then opens the tool's browser so you can log in to Simplify **once**, click *Accept* on Simplify's one-time "Before you autofill" card, and finish your Simplify profile: work authorization, sponsorship, demographics, salary, education and experience. Most form answers come from Simplify.
 - **Fit cutoff.** Default 65, with an optional calibration run.
 - **Schedule.** Optional; see below.
 
