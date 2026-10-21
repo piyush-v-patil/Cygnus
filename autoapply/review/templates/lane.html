@@ -4,5 +4,11 @@
   <input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="ids" value="{{ cards|map(attribute='app')|map(attribute='id')|join(',') }}">
   <div class="actions" style="margin:0 0 14px"><button>Approve all visible ({{cards|length}})</button></div></form>
 {% endif %}
+{% if lane == 'needs_input' and cards %}<div class="intro">These questions are about you (work authorization, salary, start date, consent and the like) and none of
+Simplify, your saved answers or Claude may answer them. Answer here — your answers are saved and reused on future
+applications — or answer in the form itself and click <b>I answered in the form</b>. Either way the application moves
+to Ready, and you check the real form before anything is submitted.</div>{% endif %}
+{% if lane == 'ready' and cards %}<div class="intro">Before approving, click <b>Open form to check</b> to see the real
+application in the tool's browser. You can change anything there; Approve &amp; submit sends the form as it stands.</div>{% endif %}
 {% for c in cards %}{% include "_card.html" %}{% else %}<div class="empty">Nothing in {{lane_titles[lane]}}.</div>{% endfor %}
 {% endblock %}

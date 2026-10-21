@@ -122,6 +122,36 @@ def test_review_answers_are_typed_into_the_open_tab(lctx):
         c.portal.call(sess.close)
 
 
+def test_answers_typed_into_the_form_are_picked_up(lctx):
+    seed(lctx, GH)
+    app = create_app(lctx, port=8765)
+    sess = app.state.session
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        async def fill():
+            bs = await sess.browser()
+            await fill_many(lctx, [GH], RunStats(), session=bs)
+        c.portal.call(fill)
+        a = lctx.ledger.application(GH)
+        assert lctx.ledger.get(GH).state == "needs_input"
+        r = c.post(f"/app/{a['id']}/from-form", data={"csrf": sess.csrf})
+        assert "None of the questions" in r.text
+
+        from autoapply.browser.fields import fill_field, enumerate_fields
+
+        async def answer_by_hand():
+            tab = lctx.open_tabs[GH]
+            f = next(f for f in await enumerate_fields(tab) if f.key == a["missing"][0]["key"])
+            await fill_field(tab, f, "Yes")
+        c.portal.call(answer_by_hand)
+        r = c.post(f"/app/{a['id']}/from-form", data={"csrf": sess.csrf})
+        assert "Read 1 answer(s) from the form" in r.text, r.text[:2000]
+        assert lctx.ledger.get(GH).state == "ready" and lctx.has_live_tab(GH)
+        assert lctx.answers.lookup(a["missing"][0]["label"], "yes_no") == "Yes"     # learned for next time
+        r = c.post(f"/app/{a['id']}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        assert "would_submit" in r.text
+        c.portal.call(sess.close)
+
+
 def test_run_review_fills_then_serves_with_tabs_open(lctx, monkeypatch):
     import autoapply.pipeline as pl
     import autoapply.review.server as server

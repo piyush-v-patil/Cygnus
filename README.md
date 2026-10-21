@@ -69,8 +69,8 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 
 | Lane | What you do |
 |---|---|
-| **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. Then **Approve & submit** or **Reject**. *Approve all visible* still submits them one at a time. |
-| **Needs input** | Answer the exact questions the tool could not. Your answers fill this application, are saved to `answers.yaml`, and complete any other queued application that asks the same question. Those move to Ready. |
+| **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. **Open form to check** shows the real application in the tool's browser, where you can change anything. Then **Approve & submit** (it sends the form as it stands) or **Reject**. *Approve all visible* still submits them one at a time. |
+| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. |
 | **Stuck** | A CAPTCHA, login wall, Simplify failure, failed upload, or a form that changed. **Open form** brings the tab up, or reopens it and refills it from the plan. Finish it by hand, then click **I submitted it** (a screenshot is recorded) or **Give up**. |
 | **History** | Every submitted application, with its saved copy. |
 
