@@ -129,6 +129,7 @@ class BrowserCfg(_Strict):
     # the tool re-applies this choice: essentials = "Essentials only", accept = "Accept"
     simplify_consent: Literal["essentials", "accept"] = "essentials"
     autofill_timeout_s: float = 45
+    form_timeout_s: float = 420          # one application, open to screenshot; then it goes to Stuck
     page_timeout_s: float = 45
 
     @field_validator("headless")

@@ -53,6 +53,8 @@ autoapply review                                 # open the review queue + the t
 autoapply status                                 # counts per state, spend this month, last run
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
+autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run
+autoapply browser [--url URL]                    # open the tool's browser (Simplify login, profile)
 autoapply schedule install|remove|show           # Windows Task Scheduler
 autoapply health                                 # the pre-run checks on their own
 ```
@@ -164,6 +166,9 @@ Posting states: `discovered → filtered_out | unsupported | enriched → closed
 | Health: *token rejected (expired?)* | Make a new fine-grained token and put it in `secrets.env` as `GITHUB_TOKEN=`. Pending write-backs are retried automatically. |
 | Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. |
 | Run stopped: *Simplify's legal answers disagree with your profile* | Your Simplify profile's sponsorship/authorization answers differ from `visa:` in profile.yaml. Fix whichever is wrong. The affected application is in Stuck. |
+| Stuck: `simplify_not_ready` / `simplify_did_not_fill` | Simplify's profile did not load, or its autofill filled nothing (the tool clicks up to 3 times). Check `autoapply browser` shows your Simplify profile, then `autoapply requeue --lane stuck` and run again. |
+| Stuck: `timed_out` | One form took longer than `browser.form_timeout_s` (default 7 min); the reason says which step. `autoapply requeue --lane stuck` to try again. |
+| The run looks frozen | It prints each application and step as it goes (`[2/3] Company - Title`, `Simplify autofill`, `asking Claude ...`); a Claude answer for long essays can take a minute. Nothing asks for confirmation during a run: approve afterwards in `autoapply review`. |
 | *Another autoapply run is in progress* | Only one run at a time. If none is running, delete `autoapply.lock` in the profile folder. |
 | A job you applied to by hand was attempted | Sync your dashboard marks to `jobs.json` (see Setup), or Reject it in review. |
 
