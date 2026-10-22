@@ -51,7 +51,7 @@ Before the first run:
 autoapply run [--limit N] [--no-fill] [--test]   # health → sync → filter → score → fill → queue → notify
 autoapply run --review [--limit N] [--test]      # same, then review right away with the filled forms still open
 autoapply review                                 # open the review queue + the tool's browser
-autoapply status                                 # counts per state, spend this month, last run
+autoapply status                                 # counts per state, spend, last run's numbers
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
 autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run
