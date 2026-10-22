@@ -144,6 +144,21 @@ def test_run_no_fill_end_to_end(make_ctx, monkeypatch):
     counts = run(ctx, no_fill=True)
     assert counts["scored"] == 3 and ctx.ledger.last_run()["ended_at"]
     assert fill_candidates(ctx, None)[0] == "greenhouse:acme:1001"          # newest first
+    from autoapply.pipeline import status_report
+    rep = status_report(ctx)                       # the last run's numbers, spelled out
+    assert "    3  scored by Claude" in rep and "added to the review queue" in rep
+
+
+def test_run_breakdown_lists_skips_and_stop_reason():
+    from autoapply.pipeline import run_breakdown
+    lines = run_breakdown({"enriched": 50, "held": 30, "skipped": 12, "ready": 1, "needs_input": 2,
+                           "skipped_by_reason": {"no_sponsorship": 10, "yoe": 2}, "stopped": "budget reached"})
+    text = "\n".join(lines)
+    assert "   50  looked at this run" in text and "   30  held: fit score below your cutoff" in text
+    assert "   12  skipped: no_sponsorship 10, yoe 2" in text
+    assert "-> 3 application(s) added to the review queue" in text
+    assert "Stopped early: budget reached" in text
+    assert run_breakdown({}) == ["  (no numbers recorded for it)"]
 
 
 def test_malformed_json_retried_once_then_error(make_ctx):

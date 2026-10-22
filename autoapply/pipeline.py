@@ -5,6 +5,7 @@ anywhere (budget, crash, PC asleep) resumes from where it was next time.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -325,6 +326,51 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
     return stats.as_dict()
 
 
+# what each run counter means, in the order a posting meets them
+RUN_LINES = [
+    ("new", "new jobs found in your sources"),
+    ("eligible", "jobs waiting to be looked at (passed the free filters)"),
+    ("filtered_out", "filtered out by the free rules"),
+    ("unsupported", "on a site the tool cannot apply on"),
+    ("enriched", "looked at this run (description fetched; --limit caps this)"),
+    ("closed", "closed postings"),
+    ("not_targeted", "not targeted by your current filters (tier, role or site)"),
+    ("released", "earlier low-fit skips moved back to held"),
+    ("scored", "scored by Claude"),
+    ("held", "held: fit score below your cutoff"),
+    ("unheld", "held earlier, now above the cutoff"),
+    ("skipped", "skipped"),
+    ("ready", "filled -> Ready"),
+    ("needs_input", "filled -> Needs input"),
+    ("stuck", "Stuck"),
+    ("corrected", "forms where Simplify's visa answer was replaced by yours"),
+    ("error", "errors (retried next run)"),
+    ("written_back", "status changes written to job-monitor"),
+]
+
+
+def run_breakdown(counts: dict) -> list[str]:
+    """The last run's counters as readable lines for `autoapply status`."""
+    if not counts:
+        return ["  (no numbers recorded for it)"]
+    known = {k for k, _ in RUN_LINES} | {"skipped_by_reason", "stopped"}
+    why = counts.get("skipped_by_reason") or {}
+    lines = []
+    for k, label in RUN_LINES:
+        if not counts.get(k):
+            continue
+        if k == "skipped" and why:
+            label += ": " + ", ".join(f"{r} {n}" for r, n in sorted(why.items(), key=lambda kv: -kv[1]))
+        lines.append(f"  {counts[k]:>5}  {label}")
+    lines += [f"  {v:>5}  {k}" for k, v in sorted(counts.items())
+              if k not in known and isinstance(v, int) and v]
+    filled = sum(counts.get(k, 0) for k in ("ready", "needs_input", "stuck"))
+    lines.append(f"  -> {filled} application(s) added to the review queue")
+    if counts.get("stopped"):
+        lines.append(f"  Stopped early: {counts['stopped']}")
+    return lines
+
+
 def status_report(ctx: Context) -> str:
     led = ctx.ledger
     counts = led.counts()
@@ -343,6 +389,8 @@ def status_report(ctx: Context) -> str:
     if last:
         lines.append(f"Last run: {last['started_at']} -> {last['ended_at'] or 'running/crashed'}"
                      + (f" (error: {last['error']})" if last.get("error") else ""))
+        counts_json = last.get("counts_json")
+        lines += run_breakdown(json.loads(counts_json) if counts_json else {})
     pend = led.db.execute("SELECT COUNT(*) FROM writeback_queue WHERE done_at IS NULL").fetchone()[0]
     if pend:
         lines.append(f"Write-backs pending: {pend}")

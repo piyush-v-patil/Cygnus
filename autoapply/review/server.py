@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 LANE_TITLES = {READY: "Ready", NEEDS_INPUT: "Needs input", STUCK: "Stuck"}
 SOURCE_LABEL = {"simplify": "Simplify", "answer_bank": "Saved answer", "claude": "Claude", "user": "You",
+                "profile": "Your visa answers",
                 "resume": "Resume", "cover_letter": "Claude (cover letter)"}
 
 

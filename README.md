@@ -10,7 +10,7 @@ Cygnus applies to software jobs for you, and you approve every application befor
 
 Everything runs on your PC. The repository contains no personal data. Your resumes, answers, keys and history live in a private profile folder, `%USERPROFILE%\.autoapply\` by default.
 
-> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
+> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file and a work-authorization or sponsorship answer that contradicts your visa answers: that one is replaced with yours, marked on the review card, and you get one warning per run to fix your Simplify profile. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
 
 ---
 
@@ -51,7 +51,7 @@ Before the first run:
 autoapply run [--limit N] [--no-fill] [--test]   # health → sync → filter → score → fill → queue → notify
 autoapply run --review [--limit N] [--test]      # same, then review right away with the filled forms still open
 autoapply review                                 # open the review queue + the tool's browser
-autoapply status                                 # counts per state, spend this month, last run
+autoapply status                                 # counts per state, spend, last run's numbers
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
 autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run

@@ -124,6 +124,10 @@ class Notifier:
     def alert(self, message: str):
         self.discord.send(f"⚠️ **AutoApply stopped**: {message}")
 
+    def warn(self, message: str):
+        """Something to fix that did not stop the run."""
+        self.discord.send(f"⚠️ **AutoApply**: {message}")
+
 
 def group_needs_input(items: list[dict]) -> list[list[dict]]:
     by_co: dict[str, list[dict]] = defaultdict(list)
