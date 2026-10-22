@@ -139,9 +139,57 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             raise HTTPException(404)
         return FileResponse(f)
 
-    def _back(lane: str, msg: str) -> RedirectResponse:
+    def _back(lane: str, msg: str, app_id: int | None = None) -> RedirectResponse:
         from urllib.parse import quote
-        return RedirectResponse(f"/lane/{lane}?msg={quote(msg)}", 303)
+        anchor = f"#app{app_id}" if app_id is not None else ""
+        return RedirectResponse(f"/lane/{lane}?msg={quote(msg)}{anchor}", 303)
+
+    def _lane_of(key: str) -> str:
+        state = ctx.ledger.get(key).state
+        return state if state in LANES else NEEDS_INPUT
+
+    async def _show(key: str) -> str:
+        """Bring the application's tab to the front, or reopen + refill it. Returns a note."""
+        from ..browser.fill import Stuck
+        from ..browser.replay import replay
+        async with sess.lock:
+            bs = await sess.browser()
+            tab = ctx.open_tabs.get(key) if ctx.has_live_tab(key) else None
+            note = "The form is in front in the tool's browser."
+            if tab is None or tab.is_closed():
+                try:
+                    tab = await replay(ctx, bs, ctx.ledger.application(key))
+                    note = "Reopened and refilled the form in the tool's browser."
+                except Stuck as e:
+                    tab = getattr(e, "page", None)
+                    note = f"Reopened the form; finish it by hand ({e})."
+                except Exception as e:  # noqa: BLE001
+                    tab = getattr(e, "page", None)
+                    note = f"Reopened the form; finish it by hand ({type(e).__name__})."
+                if tab is not None:
+                    ctx.remember_tab(key, tab)
+            if tab is not None:
+                await tab.bring_to_front()
+        return note
+
+    async def _after_answers(key: str, res: dict, show: bool) -> str:
+        """Type new answers into open tabs, optionally show this form; the flash message."""
+        msg = f"Saved. {res['still_missing']} question(s) left." if res["still_missing"] else "Saved."
+        added = {k: v for k, v in (res.get("added") or {}).items() if v}
+        if added and ctx.live_tabs():
+            from ..browser.submit import type_into_tab
+            async with sess.lock:
+                typed = [k for k, entries in added.items() if await type_into_tab(ctx, k, entries)]
+            if typed:
+                msg += f" Typed into {len(typed)} open tab(s)."
+        others = [k for k in res["ready"] if k != key]
+        if others:
+            msg += f" {len(others)} other application(s) moved to Ready."
+        if show:
+            msg += " " + await _show(key)
+        if ctx.ledger.get(key).state == READY:
+            msg += " Check every field in the form, then click Approve & submit here."
+        return msg
 
     def _key(app_id: int) -> str:
         a = ctx.ledger.application(app_id=app_id)
@@ -195,46 +243,34 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                 many = form.getlist(k)
                 vals[k[3:]] = "; ".join(v for v in many if v) if len(many) > 1 else (many[0] or "")
         res = actions.save_answers(ctx.ledger, ctx.answers, key, vals)
-        msg = f"Saved. {res['still_missing']} question(s) left." if res["still_missing"] else "Saved."
-        if res.get("added") and ctx.live_tabs():
-            from ..browser.submit import type_into_tab
-            async with sess.lock:
-                typed = [k for k, entries in res["added"].items() if await type_into_tab(ctx, k, entries)]
-            if typed:
-                msg += f" Typed into {len(typed)} open tab(s)."
-        others = [k for k in res["ready"] if k != key]
-        if others:
-            msg += f" {len(others)} other application(s) moved to Ready."
-        if form.get("then") == "submit" and ctx.ledger.get(key).state == READY:
-            msg += " " + await _submit(key)
-        return _back(NEEDS_INPUT, msg)
+        # never submits from here: answering leads to the real form, approval happens after checking it
+        msg = await _after_answers(key, res, show=form.get("then") in ("show", "submit"))
+        return _back(_lane_of(key), msg, app_id)
+
+    @app.post("/app/{app_id}/from-form")
+    async def from_form(app_id: int, csrf: str = Form("")):
+        """The user answered the questions in the form itself: read them back from the tab."""
+        check_csrf(csrf)
+        key = _key(app_id)
+        from ..browser.submit import read_tab_answers
+        async with sess.lock:
+            got = await read_tab_answers(ctx, key)
+        if got is None:
+            return _back(NEEDS_INPUT, "That form is not open. Click Open form, answer the questions there, "
+                                      "then click “I answered in the form” again.", app_id)
+        vals, attached = got
+        if not vals and not attached:
+            return _back(NEEDS_INPUT, "None of the questions listed here are answered in the form yet.", app_id)
+        res = actions.save_answers(ctx.ledger, ctx.answers, key, vals, attached=attached)
+        res["added"] = {k: v for k, v in res["added"].items() if k != key}   # already in this tab
+        msg = await _after_answers(key, res, show=False)
+        return _back(_lane_of(key), f"Read {len(vals) + len(attached)} answer(s) from the form. " + msg, app_id)
 
     @app.post("/app/{app_id}/open")
     async def open_form(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
         """Bring the tab to the front, or reopen + replay the plan for the user to finish."""
         check_csrf(csrf)
-        key = _key(app_id)
-        from ..browser.fill import Stuck
-        from ..browser.replay import replay
-        async with sess.lock:
-            bs = await sess.browser()
-            tab = ctx.open_tabs.get(key) if ctx.has_live_tab(key) else None
-            note = "Brought the form to the front."
-            if tab is None or tab.is_closed():
-                try:
-                    tab = await replay(ctx, bs, ctx.ledger.application(key))
-                    note = "Reopened and refilled the form."
-                except Stuck as e:
-                    tab = getattr(e, "page", None)
-                    note = f"Reopened; finish it by hand ({e})."
-                except Exception as e:  # noqa: BLE001
-                    tab = getattr(e, "page", None)
-                    note = f"Reopened; finish it by hand ({type(e).__name__})."
-                if tab is not None:
-                    ctx.remember_tab(key, tab)
-            if tab is not None:
-                await tab.bring_to_front()
-        return _back(lane, note)
+        return _back(lane if lane in LANES else STUCK, await _show(_key(app_id)), app_id)
 
     @app.post("/app/{app_id}/manual")
     async def manual(app_id: int, csrf: str = Form("")):

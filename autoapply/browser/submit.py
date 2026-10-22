@@ -223,6 +223,29 @@ async def type_into_tab(ctx, posting_key: str, entries: list[dict]) -> bool:
     return True
 
 
+async def read_tab_answers(ctx, posting_key: str) -> tuple[dict[str, str], set[str]] | None:
+    """What the user typed into the open tab for the application's missing questions.
+
+    Returns (answers by missing key, upload fields now attached), or None when
+    there is no open tab.
+    """
+    from .replay import _match
+    if not ctx.has_live_tab(posting_key):
+        return None
+    app = ctx.ledger.application(posting_key) or {}
+    fields = await enumerate_fields(ctx.open_tabs[posting_key], form_hints(parse_key(posting_key).ats))
+    answers, attached = {}, set()
+    for m in app.get("missing") or []:
+        f = _match(fields, m)
+        if f is None or f.empty:
+            continue
+        if m.get("kind") == "file":
+            attached.add(m["key"])
+        else:
+            answers[m["key"]] = f.value
+    return answers, attached
+
+
 def _source(app: dict, key: str) -> str:
     for e in app.get("fill_plan") or []:
         if e["key"] == key:

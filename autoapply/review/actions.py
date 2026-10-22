@@ -18,10 +18,12 @@ def _compatible(missing: dict, kind: str, answer: str) -> str | None:
     return answer
 
 
-def save_answers(led: Ledger, bank: AnswerBank, posting_key: str, answers: dict[str, str]) -> dict:
+def save_answers(led: Ledger, bank: AnswerBank, posting_key: str, answers: dict[str, str],
+                 attached: set[str] = frozenset()) -> dict:
     """Store answers for one application, learn them, and unblock matching items.
 
-    `answers` maps a missing field's key to the user's value. Returns
+    `answers` maps a missing field's key to the user's value; `attached` names
+    upload fields the user filled in the open tab (done, but nothing to replay). Returns
     {"ready": [...posting keys moved to Ready], "still_missing": n,
      "added": {posting_key: [plan entries added]}} - the entries a live tab still needs.
     """
@@ -32,6 +34,8 @@ def save_answers(led: Ledger, bank: AnswerBank, posting_key: str, answers: dict[
     added: dict[str, list[dict]] = {}
     plan, still = list(app["fill_plan"] or []), []
     for m in app["missing"]:
+        if m["key"] in attached:
+            continue
         val = (answers.get(m["key"]) or "").strip()
         if not val:
             still.append(m)

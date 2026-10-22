@@ -98,6 +98,34 @@ def test_reject_writes_back_skip(client):
     assert pend[-1]["change"] == {"status": "skip", "skip_reason": "user_rejected", "skipped_by": "autoapply"}
 
 
+def test_uploads_attached_in_the_tab_count_as_answered(make_ctx):
+    ctx = make_ctx()
+    needs_input_app(ctx, "greenhouse:a:1", "A", extra_missing=[
+        {"key": "id:t", "label": "Transcript", "kind": "file", "answer_kind": "short_text",
+         "options": [], "required": True, "reason": "", "question": "transcript"}])
+    res = save_answers(ctx.ledger, ctx.answers, "greenhouse:a:1", {"id:q105": "Yes"}, attached={"id:t"})
+    assert res["still_missing"] == 0 and ctx.ledger.get("greenhouse:a:1").state == READY
+    plan = ctx.ledger.application("greenhouse:a:1")["fill_plan"]
+    assert [e["key"] for e in plan] == ["id:first_name", "id:q105"]      # nothing to replay for the upload
+
+
+def test_answering_lands_on_the_card_in_ready(client):
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    app_id = client.ctx.ledger.application("greenhouse:a:1")["id"]
+    r = client.post(f"/app/{app_id}/answers", data={"csrf": client.csrf, "a__id:q105": "No", "then": "save"},
+                    follow_redirects=False)
+    assert r.headers["location"].startswith("/lane/ready?") and r.headers["location"].endswith(f"#app{app_id}")
+    assert client.ctx.ledger.get("greenhouse:a:1").state == READY
+
+
+def test_from_form_without_an_open_tab_explains(client):
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    app_id = client.ctx.ledger.application("greenhouse:a:1")["id"]
+    r = client.post(f"/app/{app_id}/from-form", data={"csrf": client.csrf})
+    assert "That form is not open" in r.text
+    assert client.ctx.ledger.get("greenhouse:a:1").state == NEEDS_INPUT
+
+
 def test_answer_form_post(client):
     needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
     app_id = client.ctx.ledger.application("greenhouse:a:1")["id"]
@@ -124,6 +152,10 @@ def test_approve_in_test_mode_through_the_ui(make_ctx, tmp_path):
         key = ctx.ledger.application(GH)["missing"][0]["key"]
         r = c.post(f"/app/{app_id}/answers", data={"csrf": app.state.session.csrf, f"a__{key}": "Yes",
                                                    "then": "submit"})
+        # answering never submits (not even the old "Save & approve & submit" button): it shows the real form and the card waits in Ready
+        assert ctx.ledger.get(GH).state == READY and ctx.has_live_tab(GH)
+        assert "Check every field in the form" in r.text and "Open form to check" in r.text
+        r = c.post(f"/app/{app_id}/approve", data={"csrf": app.state.session.csrf, "lane": "ready"})
         assert "would_submit" in r.text, r.text[:2000]
         c.portal.call(app.state.session.close)
     assert ctx.ledger.get(GH).state == "would_submit"
