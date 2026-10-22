@@ -10,7 +10,7 @@ Cygnus applies to software jobs for you, and you approve every application befor
 
 Everything runs on your PC. The repository contains no personal data. Your resumes, answers, keys and history live in a private profile folder, `%USERPROFILE%\.autoapply\` by default.
 
-> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
+> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file and a work-authorization or sponsorship answer that contradicts your visa answers: that one is replaced with yours, marked on the review card, and you get one warning per run to fix your Simplify profile. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
 
 ---
 

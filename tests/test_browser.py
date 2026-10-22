@@ -99,17 +99,37 @@ def test_answer_bank_fills_before_claude(bctx, transport):
     assert entry["source"] == "answer_bank" and entry["value"] == "Yes"
 
 
-def test_consistency_check_stops_the_run(bctx):
+def test_wrong_simplify_visa_answer_is_corrected_and_the_run_goes_on(bctx):
     bctx.simplify_mock = simplify_mock(sponsorship="No")   # profile says sponsorship needed later
-    bctx.profile.browser.parallel_tabs = 1                 # (in-flight tabs finish; each runs its own check)
+    bctx.profile.browser.parallel_tabs = 1
+    bctx.answers.add("Are you willing to work onsite 5 days a week?", "yes_no", "Yes")
+    sent = []
+    bctx.notifier.warn = sent.append
     seed(bctx, GH)
     seed(bctx, ASHBY, company="Gamma", role="ml-ai")
     stats = RunStats()
     asyncio.run(fill_many(bctx, [GH, ASHBY], stats))
-    assert bctx.ledger.get(GH).state == "stuck"
-    assert "consistency_check" in bctx.ledger.get(GH).reason
-    assert "disagree" in stats["stopped"]
-    assert bctx.ledger.get(ASHBY).state == "scored"                     # never touched
+    assert "stopped" not in stats
+    assert bctx.ledger.get(GH).state == "ready", bctx.ledger.application(GH)["missing"]
+    assert bctx.ledger.get(ASHBY).state != "scored"                    # the next posting was filled too
+    entry = next(e for e in bctx.ledger.application(GH)["fill_plan"] if "sponsorship" in e["label"])
+    assert entry["source"] == "profile" and entry["value"] == "Yes"
+    assert entry["note"] == "Simplify answered 'No'; your visa answers say Yes"
+    assert stats["corrected"] == 1 and len(sent) == 1 and "Fix your Simplify profile" in sent[0]
+
+    from autoapply.browser.replay import replay
+
+    async def refill():                                   # approval later refills it the same way
+        async with BrowserSession(bctx) as bs:
+            page = await replay(bctx, bs, bctx.ledger.application(GH))
+            await page.close()
+    asyncio.run(refill())
+
+    from fastapi.testclient import TestClient
+    from autoapply.review.server import create_app
+    with TestClient(create_app(bctx, port=8765), base_url="http://127.0.0.1:8765") as c:
+        html = c.get("/lane/ready").text
+    assert "Your visa answers" in html and "visa answer was corrected" in html
 
 
 def test_ashby_buttons_radio_and_eeo(bctx):

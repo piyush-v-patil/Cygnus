@@ -7,6 +7,7 @@
     · resume <b>{{a.resume_file or '—'}}</b>
     {% if c.live %} · <span class="chip live" title="This form is open in the tool's browser; approving submits it as it stands">open tab</span>{% endif %}
     {% if lane == 'needs_input' %} · waiting {{c.waited}}{% endif %}</div>
+  {% if c.plan|selectattr('note')|list %}<div class="stuck" style="color:var(--warn)">⚠ Simplify's visa answer was corrected from your profile — see the marked field below.</div>{% endif %}
   {% if c.score and c.score.reasons %}<div class="reasons">{{ c.score.reasons|join(' · ') }}</div>{% endif %}
   {% if a.stuck_reason %}<div class="stuck">Stuck: {{a.stuck_reason}}</div>{% endif %}
   {% if lane == 'needs_input' and c.missing %}
@@ -24,12 +25,13 @@
     <div class="actions"><button class="primary" name="then" value="show">Save &amp; open the form to check</button>
       <button name="then" value="save">Save answers</button></div>
   </form>{% endif %}
-  <details {% if lane == 'ready' %}open{% endif %}><summary>{{c.plan|length}} filled fields</summary>
+  <details {% if lane == 'ready' or c.plan|selectattr('note')|list %}open{% endif %}><summary>{{c.plan|length}} filled fields</summary>
   <table><tr><th>Field</th><th>Value</th><th>From</th></tr>
   {% for e in c.plan %}<tr><td>{{e.label}}{% if e.required and (e.label|trim)[-1:] not in '*✱' %} *{% endif %}</td>
     <td><div class="val">{{ e.value if e.value is string else e.value|join('; ') }}</div>
       {% if e.evidence %}<div class="ev">resume: “{{e.evidence}}”</div>{% endif %}
-      {% if e.facts_used %}<div class="ev">facts used: {{e.facts_used|join('; ')}}</div>{% endif %}</td>
+      {% if e.facts_used %}<div class="ev">facts used: {{e.facts_used|join('; ')}}</div>{% endif %}
+      {% if e.note %}<div class="ev warn">⚠ {{e.note}} — check this one in the form</div>{% endif %}</td>
     <td><span class="chip {{e.source}}">{{source_label.get(e.source, e.source)}}</span></td></tr>{% endfor %}
   </table></details>
   {% if a.screenshot_path %}<details class="shot"><summary>screenshot</summary><a href="/app/{{a.id}}/screenshot" target="_blank"><img loading="lazy" src="/app/{{a.id}}/screenshot" alt="form screenshot"></a></details>{% endif %}

@@ -343,6 +343,7 @@ RUN_LINES = [
     ("ready", "filled -> Ready"),
     ("needs_input", "filled -> Needs input"),
     ("stuck", "Stuck"),
+    ("corrected", "forms where Simplify's visa answer was replaced by yours"),
     ("error", "errors (retried next run)"),
     ("written_back", "status changes written to job-monitor"),
 ]

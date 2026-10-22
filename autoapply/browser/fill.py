@@ -37,10 +37,6 @@ class Stuck(Exception):
         self.detail = detail
 
 
-class ConsistencyError(Exception):
-    """Simplify's legal answers disagree with profile.yaml (§15.8): stop the run."""
-
-
 @dataclass
 class PlanEntry:
     key: str
@@ -53,6 +49,7 @@ class PlanEntry:
     evidence: str | None = None
     facts_used: list = field(default_factory=list)
     claude_kind: str | None = None
+    note: str | None = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v not in (None, [], "") or k in ("value", "source")}
@@ -68,6 +65,7 @@ class FillOutcome:
     resume_file: str
     generated: list[str] = field(default_factory=list)
     page: object = None
+    corrected: list[str] = field(default_factory=list)   # Simplify legal answers replaced by the profile's
 
 
 # ------------------------------------------------------------ the checks --
@@ -97,7 +95,9 @@ def expected_legal_answer(label: str, profile: Profile) -> str | None:
     return None
 
 
-def consistency_problems(fields: list[Field], profile: Profile) -> list[str]:
+def legal_mismatches(fields: list[Field], profile: Profile) -> list[tuple[Field, str]]:
+    """Simplify-filled work authorization / sponsorship answers that contradict the
+    user's confirmed visa answers, with the answer the profile requires ("yes"/"no")."""
     out = []
     for f in fields:
         if not f.filled_by_simplify:
@@ -105,8 +105,33 @@ def consistency_problems(fields: list[Field], profile: Profile) -> list[str]:
         exp = expected_legal_answer(f.label, profile)
         got = _yes_no(f.value)
         if exp and got and exp != got:
-            out.append(f"{f.label!r}: Simplify answered {f.value!r}, profile says {exp}")
+            out.append((f, exp))
     return out
+
+
+async def correct_legal_answers(page, fields: list[Field], profile: Profile, plan: list, missing: list) -> list[str]:
+    """§15.8: the profile's visa answers win over Simplify's. Each wrong answer is
+    replaced (and flagged for review) or, if the form will not take it, asked in
+    Needs input. The run goes on either way. Returns the corrected labels."""
+    corrected = []
+    for f, exp in legal_mismatches(fields, profile):
+        note = f"Simplify answered {f.value!r}; your visa answers say {exp.capitalize()}"
+        f.filled_by_simplify = False                 # not Simplify's answer any more
+        if f.kind == "combobox" and not f.options:
+            f.options = await combobox_options(page, f)
+        value = next((o for o in f.options if _yes_no(o) == exp), None) if f.options else exp.capitalize()
+        if value is None:
+            missing.append(_missing(f, note + " - pick the right option"))
+            continue
+        try:
+            await fill_field(page, f, value)
+        except FillError as e:
+            missing.append(_missing(f, f"{note} - the form did not take the correction ({e})"))
+            continue
+        plan.append(PlanEntry(f.key, f.label, f.kind, value, "profile", f.required, f.options, note=note))
+        corrected.append(f.label)
+        log.warning("    corrected %r: %s", f.label, note)
+    return corrected
 
 
 async def detect_blockers(page) -> str | None:
@@ -232,10 +257,7 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
     for f in fields:
         f.filled_by_simplify = bool(f.value.strip()) and not (before.get(f.key) or "").strip()
 
-    if check_consistency:
-        probs = consistency_problems(fields, profile)
-        if probs:
-            raise ConsistencyError("; ".join(probs))
+    corrected = await correct_legal_answers(page, fields, profile, plan, missing) if check_consistency else []
 
     for f in fields:
         if f.filled_by_simplify and f.kind != "file":
@@ -306,7 +328,7 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
     by_key = {f.key: f for f in final}
     for p in list(plan):
         f = by_key.get(p.key)
-        if p.source in ("answer_bank", "claude") and f is not None and f.empty:
+        if p.source in ("answer_bank", "claude", "profile") and f is not None and f.empty:
             plan.remove(p)
             if f.required:
                 m = _missing(f, "the form did not keep the answer")
@@ -321,7 +343,8 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
     shot = await safe_screenshot(page, shot)
     lane = NEEDS_INPUT if missing else READY
     return FillOutcome(lane=lane, plan=[p.to_dict() for p in plan], missing=missing, stuck_reason=None,
-                       screenshot=shot, resume_file=resume_name, generated=generated, page=page)
+                       screenshot=shot, resume_file=resume_name, generated=generated, page=page,
+                       corrected=corrected)
 
 
 def _missing(f: Field, reason: str) -> dict:
@@ -416,17 +439,13 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
                 raise err from None
             page = out.page
             record_outcome(ctx, key, out, stats)
+            if out.corrected:
+                stats["corrected"] += 1
             log.info("    -> %s", "Ready" if out.lane == READY else
                      f"Needs input ({len(out.missing)} question(s): {', '.join(m['label'][:40] for m in out.missing[:3])})")
             if not state["probe_done"] or not state.get("marked"):
                 state["probe_done"] = state["marked"] = True
                 _mark_simplify_good(ctx)
-        except ConsistencyError as e:
-            page = getattr(e, "page", None)
-            record_stuck(ctx, key, f"consistency_check: {e}", stats, screenshot=await _shot(ctx, page, key))
-            state["stop"] = (f"Simplify's legal answers disagree with your profile: {e}. Fix whichever is "
-                             "wrong - your Simplify profile (simplify.jobs > Profile > work authorization) "
-                             "or your visa answers (`autoapply setup`) - then run again")
         except Stuck as e:
             page = getattr(e, "page", None)
             log.info("    -> Stuck: %s", e)
@@ -491,6 +510,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     else:
         async with BrowserSession(ctx) as bs:
             await go(bs)
+    if stats.get("corrected"):
+        msg = (f"On {stats['corrected']} form(s) Simplify's work authorization / sponsorship answer disagreed "
+               "with your visa answers; the tool used yours (marked on the card). Fix your Simplify profile "
+               "(simplify.jobs > Profile > work authorization), or `autoapply setup` if your visa answers are wrong.")
+        log.warning(msg)
+        ctx.notifier.warn(msg)
     if state["stop"]:
         stats["stopped"] = state["stop"]
         log.error("run stopped: %s", state["stop"])
