@@ -8,12 +8,16 @@
 Simplify, your saved answers or Claude may answer them. Answer here — your answers are saved and reused on future
 applications — or answer in the form itself and click <b>I answered in the form</b>. Either way the application moves
 to Ready, and you check the real form before anything is submitted.</div>{% endif %}
+{% if lane == 'needs_input' and cards %}
+<form method="post" action="/retry-lane/needs_input" onsubmit="return confirm('Fill all {{cards|length}} Needs-input applications again on the next run? Your saved answers are used; answers typed here but not saved are dropped.')">
+  <input type="hidden" name="csrf" value="{{csrf}}">
+  <div class="actions" style="margin:0 0 14px"><button>Fill all again on the next run ({{cards|length}})</button></div></form>{% endif %}
 {% if lane == 'ready' and cards %}<div class="intro">Before approving, click <b>Open form to check</b> to see the real
 application in the tool's browser. You can change anything there; Approve &amp; submit sends the form as it stands.</div>{% endif %}
 {% if lane == 'stuck' and cards %}<div class="intro">Stuck applications from earlier sessions have no open tab: <b>Open form</b>
 reopens one and refills it, or <b>Fill again</b> queues it to be filled from the start on the next run. Ones stuck for a
 temporary reason (Simplify not ready, a page that did not load, a timeout) are filled again automatically, up to twice.</div>
-<form method="post" action="/retry-stuck" onsubmit="return confirm('Fill all {{cards|length}} Stuck applications again on the next run? Their current state here is dropped.')">
+<form method="post" action="/retry-lane/stuck" onsubmit="return confirm('Fill all {{cards|length}} Stuck applications again on the next run? Their current state here is dropped.')">
   <input type="hidden" name="csrf" value="{{csrf}}">
   <div class="actions" style="margin:0 0 14px"><button>Fill all again on the next run ({{cards|length}})</button></div></form>{% endif %}
 {% for c in cards %}{% include "_card.html" %}{% else %}<div class="empty">Nothing in {{lane_titles[lane]}}.</div>{% endfor %}

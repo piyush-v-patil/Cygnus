@@ -192,6 +192,20 @@ def test_fill_again_from_the_stuck_page(client):
     app_id = led.application("greenhouse:a:1")["id"]
     r = client.post(f"/app/{app_id}/retry", data={"csrf": client.csrf})
     assert "filled again on the next" in r.text and led.get("greenhouse:a:1").state == "scored"
-    r = client.post("/retry-stuck", data={"csrf": client.csrf})
+    r = client.post("/retry-lane/stuck", data={"csrf": client.csrf})
     assert "2 application(s) will be filled again" in r.text
     assert {led.get(k).state for k in ("greenhouse:b:2", "greenhouse:c:3")} == {"scored"}
+
+
+def test_fill_again_from_needs_input(client):
+    led = client.ctx.ledger
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    needs_input_app(client.ctx, "greenhouse:b:2", "Beta")
+    page = client.get("/lane/needs_input").text
+    assert "Fill all again on the next run (2)" in page and page.count(">Fill again</button>") == 2
+    app_id = led.application("greenhouse:a:1")["id"]
+    r = client.post(f"/app/{app_id}/retry", data={"csrf": client.csrf, "lane": "needs_input"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/lane/needs_input?") and led.get("greenhouse:a:1").state == "scored"
+    client.post("/retry-lane/needs_input", data={"csrf": client.csrf})
+    assert led.get("greenhouse:b:2").state == "scored"
+    assert client.post("/retry-lane/ready", data={"csrf": client.csrf}).status_code == 404

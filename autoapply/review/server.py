@@ -332,17 +332,21 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         return len(ctx.ledger.requeue_keys(keys))
 
     @app.post("/app/{app_id}/retry")
-    async def retry(app_id: int, csrf: str = Form("")):
-        """Fill this one again from scratch on the next run (after you fixed the cause)."""
+    async def retry(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
+        """Fill this one again from scratch on the next run (after you fixed the cause, or saved
+        answers that cover its questions)."""
         check_csrf(csrf)
         n = await _refill([_key(app_id)])
-        return _back(STUCK, "It will be filled again on the next `autoapply run`." if n else "Nothing to fill again.")
+        return _back(lane if lane in LANES else STUCK,
+                     "It will be filled again on the next `autoapply run`." if n else "Nothing to fill again.")
 
-    @app.post("/retry-stuck")
-    async def retry_all(csrf: str = Form("")):
+    @app.post("/retry-lane/{lane}")
+    async def retry_all(lane: str, csrf: str = Form("")):
         check_csrf(csrf)
-        n = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(STUCK)])
-        return _back(STUCK, f"{n} application(s) will be filled again on the next `autoapply run --review`.")
+        if lane not in (STUCK, NEEDS_INPUT):
+            raise HTTPException(404)
+        n = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(lane)])
+        return _back(lane, f"{n} application(s) will be filled again on the next `autoapply run --review`.")
 
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):
