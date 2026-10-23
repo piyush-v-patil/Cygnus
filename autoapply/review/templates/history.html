@@ -3,7 +3,7 @@
 {% for c in cards %}{% set a = c.app %}{% set p = c.p %}
 <div class="card"><h2>{{p.company}} — {{p.title}}</h2>
   <div class="meta">{{c.state}} · {{a.submitted_at or a.updated_at}} · resume {{a.resume_file}}{% if c.score %} · fit {{c.score.score}}{% endif %}
-   · <a href="{{p.apply_url}}" target="_blank" rel="noreferrer">posting</a></div>
+   · {% if p.apply_url|web_url %}<a href="{{p.apply_url|web_url}}" target="_blank" rel="noreferrer">posting</a>{% endif %}</div>
   {% if a.submission_dir %}<div class="actions">
     <a href="/app/{{a.id}}/file/form.png" target="_blank">form.png</a> · <a href="/app/{{a.id}}/file/after_submit.png" target="_blank">after_submit.png</a>
     · <a href="/app/{{a.id}}/file/fields.json" target="_blank">fields.json</a> · <a href="/app/{{a.id}}/file/meta.json" target="_blank">meta.json</a>

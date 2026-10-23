@@ -18,27 +18,36 @@ class Check:
     name: str
     ok: bool
     message: str
+    warn_only: bool = False       # shown, but does not stop anything
 
 
 @dataclass
 class Report:
     checks: list[Check] = field(default_factory=list)
+    soft: bool = False            # while set, failures are warnings (a review session's extras)
 
-    def add(self, name: str, ok: bool, message: str) -> bool:
-        self.checks.append(Check(name, ok, message))
-        (log.info if ok else log.error)("health %s: %s - %s", name, "ok" if ok else "FAIL", message)
+    def add(self, name: str, ok: bool, message: str, warn_only: bool = False) -> bool:
+        warn_only = warn_only or self.soft
+        self.checks.append(Check(name, ok, message, warn_only))
+        (log.info if ok else log.warning if warn_only else log.error)(
+            "health %s: %s - %s", name, "ok" if ok else "WARN" if warn_only else "FAIL", message)
         return ok
 
     @property
     def ok(self) -> bool:
-        return all(c.ok for c in self.checks)
+        return all(c.ok or c.warn_only for c in self.checks)
+
+    @property
+    def warnings(self) -> list[str]:
+        return [f"{c.name}: {c.message}" for c in self.checks if not c.ok and c.warn_only]
 
     def first_failure(self) -> str:
-        c = next((c for c in self.checks if not c.ok), None)
+        c = next((c for c in self.checks if not c.ok and not c.warn_only), None)
         return f"{c.name}: {c.message}" if c else ""
 
     def render(self) -> str:
-        return "\n".join(f"[{'PASS' if c.ok else 'FAIL'}] {c.name}: {c.message}" for c in self.checks)
+        return "\n".join(f"[{'PASS' if c.ok else 'WARN' if c.warn_only else 'FAIL'}] {c.name}: {c.message}"
+                         for c in self.checks)
 
 
 def run_health(ctx: Context, probe_browser: bool = True, review: bool = False) -> Report:
@@ -56,6 +65,9 @@ def run_health(ctx: Context, probe_browser: bool = True, review: bool = False) -
     probs = ctx.resumes.check()
     rep.add("resumes", not probs, "; ".join(probs) or f"{len(ctx.resumes.all_files())} resume(s) readable")
 
+    # 4-6 matter to a review session only as warnings: approving replays saved answers
+    # (no Claude), and write-back and Discord failures are retried later
+    rep.soft = review
     # 4. Anthropic key + budget + pricing
     _check_llm(ctx, rep)
 
@@ -76,6 +88,8 @@ def run_health(ctx: Context, probe_browser: bool = True, review: bool = False) -
                         else f"webhook answered HTTP {r.status_code} (deleted or wrong URL?)")
             except requests.RequestException as e:
                 rep.add("discord", False, f"webhook unreachable: {type(e).__name__}")
+
+    rep.soft = False
 
     # 7. job sources (skipped for review sessions: they do not read sources)
     if not review:
@@ -103,9 +117,9 @@ def _check_llm(ctx: Context, rep: Report):
         rep.add("anthropic", False, str(e))
         return
     for m in {profile.llm.score_model, profile.llm.write_model}:
-        if llm.price(m) is None:
-            rep.add("pricing", False, f"no price known for {m}: set llm.pricing.{m} in profile.yaml")
-            return
+        if not llm.has_price(m):
+            rep.add("pricing", False, f"no price known for {m}: it is counted at the highest known "
+                    f"rate until you set llm.pricing.{m} in profile.yaml", warn_only=True)
     ping = getattr(llm.transport, "ping", None)
     if ping is not None:
         try:

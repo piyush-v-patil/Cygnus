@@ -82,3 +82,29 @@ def test_submission_recorded_even_if_every_screenshot_fails(make_ctx, tmp_path, 
     result = asyncio.run(go())
     assert result["state"] == "submitted"
     assert ctx.ledger.get(GH).state == "submitted"               # never left looking unsent
+
+
+def test_waiting_for_simplifys_turn_does_not_use_up_a_forms_time():
+    import asyncio
+
+    from autoapply.browser.fill import my_turn, simplify_turn, within_limit
+
+    async def go():
+        async def other_form():                     # holds the turn for 0.6 s
+            async with simplify_turn():
+                await asyncio.sleep(0.6)
+
+        async def this_form():
+            async with my_turn("waiting"):
+                await asyncio.sleep(0.2)
+            return "filled"
+
+        holder = asyncio.create_task(other_form())
+        await asyncio.sleep(0.05)
+        track: dict = {}
+        assert await within_limit(this_form(), 0.5, track) == "filled"
+        assert track["waited"] >= 0.5
+        await holder
+        with pytest.raises(asyncio.TimeoutError):
+            await within_limit(asyncio.sleep(1.0), 0.3, {})
+    asyncio.run(go())

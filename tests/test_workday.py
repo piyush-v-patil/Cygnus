@@ -77,6 +77,9 @@ def test_workday_job_data_and_closed_postings():
     assert not d.closed and d.title == "Backend Engineer" and "Python services" in d.description_text
     assert ok.urls == ["https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/External/job/Backend-Engineer_R100"]
     assert WorkdayClient(_Http(_Resp(403, {"errorCode": "S22"}))).fetch(parse_key(WD)).closed
+    from autoapply.ats import FetchError
+    with pytest.raises(FetchError):                    # bot protection or rate limits: retried, not closed
+        WorkdayClient(_Http(_Resp(403, {"errorCode": "WAF"}))).fetch(parse_key(WD))
     assert WorkdayClient(_Http(_Resp(200, {"jobPostingInfo": {"canApply": False}}))).fetch(parse_key(WD)).closed
 
 

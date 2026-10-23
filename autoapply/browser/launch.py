@@ -41,6 +41,7 @@ class BrowserSession:
         self.ctx = ctx
         self.pw = None
         self.context = None
+        self.closed = False           # the window was closed (by the user, or a crash)
         ov = getattr(ctx, "browser_overrides", None) or {}
         self.headless = ov.get("headless", False)
         self.use_extension = ov.get("extension", True)
@@ -61,6 +62,7 @@ class BrowserSession:
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self.context = await self.pw.chromium.launch_persistent_context(str(self.user_data_dir), **kw)
         self.context.set_default_timeout(cfg.page_timeout_s * 1000)
+        self.context.on("close", lambda _ctx: setattr(self, "closed", True))
         if self.use_extension:
             await self._settle_extension()
         return self

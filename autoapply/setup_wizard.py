@@ -284,8 +284,11 @@ def step_sources(paths: Paths, io: IO) -> list[dict]:
         branch = ask_branch(io, "Branch - press Enter for the default", "main")
         wb = io.yes("Mark applied/skipped jobs back in job-monitor (needs a GitHub token with Contents: write)?", True)
         token = load_secrets(paths).get("GITHUB_TOKEN")
+        if wb and token and io.yes(f"  A GitHub token is saved ({mask(token)}). Replace it (e.g. after a leak)?", False):
+            token = None
         if wb and not token:
-            token = io.ask("GitHub fine-grained token (Contents: read and write on the fork; empty to skip)")
+            token = io.secret("GitHub fine-grained token (Contents: read and write on the fork; typing is "
+                              "hidden; empty to skip)")
             if token:
                 save_secret(paths, "GITHUB_TOKEN", token)     # only what was typed here is saved
             else:
@@ -314,7 +317,7 @@ def step_discord(paths: Paths, io: IO) -> bool:
         return False
     if load_secrets(paths).get("DISCORD_WEBHOOK_URL"):
         return True
-    url = io.ask("Discord webhook URL (empty to skip)")
+    url = io.secret("Discord webhook URL (typing is hidden; empty to skip)")
     if not url:
         return False
     from .notify import Discord
@@ -329,8 +332,9 @@ def step_discord(paths: Paths, io: IO) -> bool:
 def step_workday(paths: Paths, io: IO) -> bool:
     """Workday sites need an account per company. True when a login is saved."""
     io.say("\n== Workday ==\n  Many large companies (Capital One, NVIDIA, Salesforce...) take applications on\n"
-           "  Workday, which needs an account on each company's site. You create those accounts\n"
-           "  yourself, all with one email and password; Cygnus signs in with them.")
+           "  Workday, which needs an account on each company's site, all with one email and\n"
+           "  password. Cygnus signs in with them; where you have no account yet it creates one\n"
+           "  with them (set workday.create_accounts: false in profile.yaml to create them yourself).")
     if not io.yes("Apply on Workday sites too?", True):
         return False
     have = load_secrets(paths)
@@ -349,7 +353,7 @@ def step_workday(paths: Paths, io: IO) -> bool:
 def ensure_anthropic_key(paths: Paths, io: IO) -> str | None:
     key = load_secrets(paths).get("ANTHROPIC_API_KEY")       # file or environment; never re-saved
     while not key:
-        key = io.ask("Anthropic API key (sk-ant-...; empty to skip)")
+        key = io.secret("Anthropic API key (sk-ant-...; typing is hidden; empty to skip)")
         if not key:
             return None
         try:
@@ -426,9 +430,62 @@ def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path:
     asyncio.run(go())
 
 
-def write_profile(paths: Paths, data: dict) -> None:
+def mask(secret: str) -> str:
+    return f"{secret[:4]}…{secret[-4:]}" if len(secret) > 12 else "…"
+
+
+def ask_number(io: IO, prompt: str, default: int, lo: int, hi: int) -> int:
+    while True:
+        v = io.ask(prompt, str(default))
+        if v.strip().isdigit() and lo <= int(v) <= hi:
+            return int(v)
+        io.say(f"  Please type a whole number from {lo} to {hi}.")
+
+
+def ask_times(io: IO, prompt: str, default: list[str]) -> list[str]:
+    """Times as HH:MM; "8:00" and "8" are fine."""
+    while True:
+        out, bad = [], []
+        for t in (x.strip() for x in io.ask(prompt, ", ".join(default)).split(",")):
+            m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?", t)
+            if m and int(m.group(1)) < 24 and int(m.group(2) or 0) < 60:
+                out.append(f"{int(m.group(1)):02d}:{m.group(2) or '00'}")
+            elif t:
+                bad.append(t)
+        if out and not bad:
+            return out
+        io.say(f"  Not a time: {', '.join(bad) or '(empty)'} - use 24-hour HH:MM, e.g. 08:00, 18:30.")
+
+
+def _merge(old: dict, new: dict) -> dict:
+    """`new` wins; settings only the old file had (hand edits) are kept."""
+    out = dict(old)
+    for k, v in new.items():
+        out[k] = _merge(old[k], v) if isinstance(v, dict) and isinstance(old.get(k), dict) else v
+    return out
+
+
+def write_profile(paths: Paths, data: dict) -> str:
+    """Write profile.yaml. An existing one is backed up first and its other settings kept.
+    Returns a note for the user."""
     Profile.model_validate(data)            # fail here, not on the first run
+    note = ""
+    if paths.profile.exists():
+        from datetime import datetime
+        backup = paths.profile.with_name(f"profile.yaml.{datetime.now():%Y%m%d-%H%M%S}.bak")
+        old_text = paths.profile.read_text(encoding="utf-8-sig")
+        backup.write_text(old_text, encoding="utf-8")
+        note = f"Your previous profile.yaml is saved as {backup.name}"
+        try:
+            old = yaml.safe_load(old_text) or {}
+            merged = _merge(old, data) if isinstance(old, dict) else data
+            Profile.model_validate(merged)
+            data = merged
+            note += "; settings this setup did not ask about were kept."
+        except Exception:  # noqa: BLE001 - an old file that no longer validates is not merged
+            note += "; it could not be merged, so only the answers given here are in the new one."
     paths.profile.write_text(PROFILE_HEADER + yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return note
 
 
 def run_wizard(paths: Paths, io: IO | None = None) -> int:
@@ -453,11 +510,11 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
         filters["ats_allowed"] = allowed + ([] if "workday" in allowed else ["workday"])
     consent = step_simplify(paths, io)
     io.say("\n== Fit ==")
-    cutoff = int(io.ask("Fit cutoff 0-100 (postings scoring lower are skipped)", "65"))
+    cutoff = ask_number(io, "Fit cutoff 0-100 (postings scoring lower are skipped)", 65, 0, 100)
     mode = io.choose("Schedule", ["manual", "daily", "twice_daily"], "daily")
     times = ["08:00"] if mode != "twice_daily" else ["08:00", "18:00"]
     if mode != "manual":
-        times = [t.strip() for t in io.ask("Run time(s), local HH:MM", ", ".join(times)).split(",")]
+        times = ask_times(io, "Run time(s), local HH:MM", times)
     data = {
         "sources": sources or [{"type": "csv", "path": str(paths.root / "jobs.csv")}],
         "filters": filters, "visa": visa, "fit": {"cutoff": cutoff, "order": "newest_first"},
@@ -468,10 +525,10 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
                           "needs_input_ping": "immediate", "ping_group_threshold": 5},
         "testing": {"never_submit": False},
     }
-    write_profile(paths, data)
+    note = write_profile(paths, data)
     if not paths.answers.exists():
         paths.answers.write_text("[]\n", encoding="utf-8")
-    io.say(f"\nWrote {paths.profile}.")
+    io.say(f"\nWrote {paths.profile}." + (f" {note}" if note else ""))
     from .context import Context
     ctx = Context(paths)
     if key and io.yes("Calibrate the fit cutoff now (label ~40 jobs, about 10 minutes)?", False):
@@ -480,5 +537,9 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     if mode != "manual" and sys.platform == "win32" and io.yes("Install the Windows scheduled task now?", True):
         from .scheduler_windows import schedule_command
         schedule_command("install", ctx, str(paths.root))
-    io.say("\nNext: `autoapply health`, then a dry run with `autoapply run --test --limit 3`.")
+    from .config import ENV_HOME
+    default_home = Paths.resolve(None).root
+    flag = "" if paths.root.resolve() == default_home.resolve() else f' --profile-dir "{paths.root}"'
+    io.say(f"\nNext: `autoapply{flag} health`, then a dry run with `autoapply{flag} run --test --limit 3`."
+           + (f"\n(Or set {ENV_HOME}={paths.root} once and leave out --profile-dir.)" if flag else ""))
     return 0

@@ -209,3 +209,54 @@ def test_fill_again_from_needs_input(client):
     client.post("/retry-lane/needs_input", data={"csrf": client.csrf})
     assert led.get("greenhouse:b:2").state == "scored"
     assert client.post("/retry-lane/ready", data={"csrf": client.csrf}).status_code == 404
+
+
+def test_stale_card_actions_change_nothing(client):
+    from autoapply.ledger import SUBMITTED
+    led = client.ctx.ledger
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    save_answers(led, client.ctx.answers, "greenhouse:a:1", {"id:q105": "Yes"})
+    led.upsert_application("greenhouse:a:1", submission_dir="sent-folder")
+    led.set_state("greenhouse:a:1", SUBMITTED)                    # sent from another tab meanwhile
+    app_id = led.application("greenhouse:a:1")["id"]
+    for route in ("manual", "reject", "giveup", "retry", "open", "approve"):
+        r = client.post(f"/app/{app_id}/{route}", data={"csrf": client.csrf}, follow_redirects=False)
+        assert r.status_code == 303, route
+        assert "already%20submitted" in r.headers["location"], route
+    assert led.get("greenhouse:a:1").state == SUBMITTED
+    assert led.application("greenhouse:a:1")["submission_dir"] == "sent-folder"
+
+
+def test_review_opens_despite_budget_and_github_trouble(make_ctx):
+    from autoapply.health import run_health
+    ctx = make_ctx()                                                 # writeback on, no GITHUB_TOKEN
+    ctx.ledger.record_usage("x", "m", {}, 99, None)                   # over the budget
+    rep = run_health(ctx, probe_browser=False, review=True)
+    assert rep.ok and any("budget" in w for w in rep.warnings) and any("github" in w for w in rep.warnings)
+    assert not run_health(ctx, probe_browser=False).ok               # a run still stops
+
+
+def test_only_web_links_render(client):
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    client.ctx.ledger.db.execute("UPDATE postings SET apply_url=? WHERE posting_key=?",
+                                 ("javascript:alert(1)", "greenhouse:a:1"))
+    page = client.get("/lane/needs_input").text
+    assert "Acme" in page and "javascript:" not in page
+
+
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Chromium")
+def test_closed_browser_window_is_reopened(make_ctx, tmp_path):
+    from autoapply.review.server import Session
+    ctx = make_ctx()
+    ctx.browser_overrides = {"headless": True, "extension": False, "user_data_dir": tmp_path / "bp"}
+    sess = Session(ctx)
+
+    async def go():
+        first = await sess.browser()
+        await first.context.close()                   # the user closed the window
+        second = await sess.browser()
+        assert second is not first and not second.closed
+        page = await second.new_page()
+        await page.goto("about:blank")
+        await sess.close()
+    asyncio.run(go())

@@ -66,7 +66,7 @@ class Context:
     @cached_property
     def notifier(self) -> Notifier:
         n = self.profile.notifications
-        return Notifier(Discord(self.secrets.get("DISCORD_WEBHOOK_URL"), n.discord),
+        return Notifier(Discord(self.secrets.get("DISCORD_WEBHOOK_URL"), n.discord, background=True),
                         n.needs_input_ping, n.ping_group_threshold)
 
     @cached_property

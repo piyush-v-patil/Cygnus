@@ -180,3 +180,33 @@ def test_unclear_sponsorship_answer_is_flagged_not_changed():
     clear = Field(key="id:r", label="Will you now or in the future require sponsorship?", kind="select",
                   options=["Yes", "No"], value="No", filled_by_simplify=True)
     assert legal_note(clear, o) is None and legal_mismatches([clear], o) == [(clear, "yes")]
+
+
+def test_spelled_out_us_states_are_us():
+    from autoapply.filters import is_us
+    for loc in ("Dublin, Ohio", "Bloomington, Indiana", "Santa Fe, New Mexico", "Remote - Indiana"):
+        assert is_us(loc), loc
+    for loc in ("Dublin, Ireland", "Bangalore, India", "Mexico City, Mexico"):
+        assert not is_us(loc), loc
+
+
+def test_h1b_list_missing_vs_unreadable(tmp_path):
+    from autoapply.config import SourceCfg
+    from autoapply.github import GitHubError
+    from autoapply.sources import JobMonitorSource, SourceError
+
+    class GH:
+        def __init__(self, status):
+            self.status = status
+
+        def read_raw(self, repo, path, branch):
+            raise GitHubError(f"HTTP {self.status}", self.status)
+
+    cfg = SourceCfg(type="jobmonitor", repo="me/job-monitor")
+    assert JobMonitorSource(cfg, None, github=GH(404)).h1b() is None        # the repo has none
+    with pytest.raises(SourceError, match="H-1B list"):
+        JobMonitorSource(cfg, None, github=GH(503)).h1b()
+    bad = tmp_path / "h1b.json"
+    bad.write_text("{truncated")
+    with pytest.raises(SourceError, match="H-1B list"):
+        JobMonitorSource(SourceCfg(type="jobmonitor", repo="me/jm", h1b_path=str(bad)), None).h1b()

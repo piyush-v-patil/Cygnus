@@ -21,6 +21,8 @@ from . import actions
 
 log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# a job source's link is only ever shown as a web link
+TEMPLATES.env.filters["web_url"] = lambda u: u if isinstance(u, str) and u.lower().startswith(("https://", "http://")) else ""
 LANE_TITLES = {READY: "Ready", NEEDS_INPUT: "Needs input", STUCK: "Stuck"}
 SOURCE_LABEL = {"simplify": "Simplify", "answer_bank": "Saved answer", "claude": "Claude", "user": "You",
                 "profile": "Your visa answers", "workday": "Workday account",
@@ -54,6 +56,14 @@ class Session:
         self.csrf = secrets.token_urlsafe(24)
 
     async def browser(self):
+        if self.bs is not None and self.bs.closed:
+            log.info("the browser window was closed: opening a new one")
+            try:
+                await self.bs.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+            self.bs = None
+            self.ctx.live_tabs()                      # forget the tabs that went with it
         if self.bs is None:
             from ..browser.launch import BrowserSession
             self.bs = await BrowserSession(self.ctx).__aenter__()
@@ -82,6 +92,33 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             if origin and origin.split("://", 1)[-1] not in allowed_hosts:
                 return HTMLResponse("Forbidden origin", status_code=403)
         return await call_next(request)
+
+    class Gone(Exception):
+        """A card acted on after its application moved on (another tab, an older page)."""
+
+        def __init__(self, key: str, state: str):
+            p = ctx.ledger.get(key)
+            super().__init__(f"{p.get('company')} - {p.get('title')} is already {state.replace('_', ' ')}; "
+                             "nothing was changed.")
+            self.lane = state if state in LANES else READY
+
+    @app.exception_handler(Gone)
+    async def gone(request: Request, e: Gone):
+        return _back(e.lane, str(e))
+
+    @app.exception_handler(Exception)
+    async def unexpected(request: Request, e: Exception):
+        log.error("review: %s %s failed: %s: %s", request.method, request.url.path, type(e).__name__, e,
+                  exc_info=e)
+        return _back(READY, f"That did not work ({type(e).__name__}: {str(e)[:200]}). "
+                            "Details are in the log; nothing was submitted by this error.")
+
+    def _active(key: str) -> str:
+        """`key`, if its application is still in a review lane."""
+        state = ctx.ledger.get(key).state
+        if state not in LANES:
+            raise Gone(key, state)
+        return key
 
     def check_csrf(token: str):
         if not secrets.compare_digest(token or "", sess.csrf):
@@ -155,6 +192,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         from ..browser.replay import replay
         from ..browser.workday import NeedsInputError
         async with sess.lock:
+            _active(key)                               # never reopen (and refill) a sent application
             bs = await sess.browser()
             tab = ctx.open_tabs.get(key) if ctx.has_live_tab(key) else None
             note = "The form is in front in the tool's browser."
@@ -223,11 +261,12 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         a = ctx.ledger.application(app_id=app_id)
         if a is None:
             raise HTTPException(404)
-        return a["posting_key"]
+        return _active(a["posting_key"])
 
     async def _submit(key: str, force: bool = False) -> str:
         from ..browser.submit import submit
         async with sess.lock:
+            _active(key)                               # another click may have finished it meanwhile
             bs = await sess.browser()
             res = await submit(ctx, bs, key, force=force)
         if res["state"] == SUBMITTED:
@@ -246,16 +285,24 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         msgs = []
         for i in [int(x) for x in ids.split(",") if x.strip().isdigit()]:
-            key = _key(i)
-            if ctx.ledger.get(key).state == READY:     # each still submits on its own
-                msgs.append(await _submit(key))
+            a = ctx.ledger.application(app_id=i)
+            if a is None or ctx.ledger.get(a["posting_key"]).state != READY:
+                continue
+            try:                                       # each still submits on its own
+                msgs.append(await _submit(a["posting_key"]))
+            except Gone:
+                continue
+            except Exception as e:  # noqa: BLE001 - one failure must not lose the others' results
+                log.error("approve-all: %s failed: %s: %s", a["posting_key"], type(e).__name__, e, exc_info=e)
+                msgs.append(f"{a['posting_key']}: not submitted ({type(e).__name__})")
         return _back(READY, f"{len(msgs)} processed: " + " | ".join(msgs))
 
     @app.post("/app/{app_id}/reject")
     async def reject(app_id: int, csrf: str = Form(""), lane: str = Form(READY)):
         check_csrf(csrf)
         key = _key(app_id)
-        actions.reject(ctx, key)
+        async with sess.lock:
+            actions.reject(ctx, _active(key))
         tab, _ = ctx.take_tab(key)
         if tab is not None:
             await tab.close()
@@ -308,7 +355,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         key = _key(app_id)
         from ..browser.submit import enter_code
         async with sess.lock:
-            res = await enter_code(ctx, key, code)
+            res = await enter_code(ctx, _active(key), code)
         if res["state"] == SUBMITTED:
             sess.submitted += 1
         p = ctx.ledger.get(key)
@@ -320,8 +367,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         """You sent it yourself in the form's tab (e.g. after a code or check there)."""
         check_csrf(csrf)
         from ..browser.submit import mark_manual
+        key = _key(app_id)
         async with sess.lock:                  # no browser needed: it records, and screenshots an open tab
-            await mark_manual(ctx, None, _key(app_id))
+            await mark_manual(ctx, None, _active(key))
         sess.manual += 1
         return _back(lane if lane in LANES else STUCK, "Recorded as submitted by hand.")
 
@@ -349,7 +397,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         """Fill this one again from scratch on the next run (after you fixed the cause, or saved
         answers that cover its questions)."""
         check_csrf(csrf)
-        n, skipped = await _refill([_key(app_id)])
+        key = _key(app_id)
+        async with sess.lock:
+            n, skipped = await _refill([_active(key)])
         return _back(lane if lane in LANES else STUCK, _refill_msg(n, skipped, one=True))
 
     @app.post("/retry-lane/{lane}")
@@ -357,14 +407,16 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         if lane not in (STUCK, NEEDS_INPUT):
             raise HTTPException(404)
-        n, skipped = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(lane)])
+        async with sess.lock:
+            n, skipped = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(lane)])
         return _back(lane, _refill_msg(n, skipped))
 
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):
         check_csrf(csrf)
         key = _key(app_id)
-        actions.give_up(ctx, key)
+        async with sess.lock:
+            actions.give_up(ctx, _active(key))
         tab, _ = ctx.take_tab(key)
         if tab is not None:
             await tab.close()

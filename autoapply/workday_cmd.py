@@ -1,6 +1,6 @@
 """`autoapply workday`: the Workday login the tool signs in with, and which companies
-still need an account. The tool never creates accounts: you do, once per company,
-with the same email and password."""
+still need an account. With workday.create_accounts (the default) a run creates a
+missing account with that login; otherwise you create them, once per company."""
 from __future__ import annotations
 
 import getpass

@@ -47,6 +47,7 @@ RECHECKABLE = {(FILTERED_OUT, None), (SKIPPED, "no_h1b_record"), (SKIPPED, "us_p
 SKIP_REASONS = ("low_fit", "us_person_required", "us_person_company", "no_sponsorship", "no_h1b_record",
                 "yoe", "blocker_other")
 MAX_ERROR_RETRIES = 3
+PROGRESS = {"enriched", "scored", "held", "ready", "needs_input"}
 
 TRANSITIONS: dict[str, set[str]] = {
     DISCOVERED: {FILTERED_OUT, UNSUPPORTED, ENRICHED, CLOSED, SKIPPED, ERROR},
@@ -244,6 +245,8 @@ class Ledger:
         args: list[Any] = [new, reason, now_iso()]
         if new == ERROR:
             extra = ", error_count = error_count + 1"
+        elif new in PROGRESS:
+            extra = ", error_count = 0"           # it got further: earlier failures no longer count
         self.db.execute(f"UPDATE postings SET state=?, reason=?, updated_at=?{extra} WHERE posting_key=?",
                         (*args, key))
         self._event(key, f"state:{new}", reason if detail is None else f"{reason or ''} {detail}".strip())
@@ -409,8 +412,10 @@ class Ledger:
                 and (r.state == WOULD_SUBMIT or not self.submit_clicked(k))]
         with self.tx():
             for k in keys:
+                # never scored (it stopped while reading or scoring the job): start it over there
+                back = SCORED if self.score(k) is not None else DISCOVERED
                 self.db.execute("UPDATE postings SET state=?, reason=NULL, error_count=0, updated_at=? "
-                                "WHERE posting_key=?", (SCORED, now_iso(), k))
+                                "WHERE posting_key=?", (back, now_iso(), k))
                 self.db.execute("DELETE FROM applications WHERE posting_key=?", (k,))
                 self._event(k, event, None)
         return keys

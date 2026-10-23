@@ -52,3 +52,9 @@ def test_application_urls_and_parse_key():
     assert application_url(parse_key("lever:beta:abc")) == "https://jobs.lever.co/beta/abc/apply"
     assert application_url(parse_key("ashby:g:x")) == "https://jobs.ashbyhq.com/g/x/application"
     assert application_url(parse_key("greenhouse:a:1")) == "https://job-boards.greenhouse.io/a/jobs/1"
+
+
+def test_only_web_links_are_postings():
+    assert not detect("javascript:alert(1)//boards.greenhouse.io/embed/job_app?for=acme&token=123").supported
+    assert not detect("data:text/html,x?gh_jid=5", "Acme", {"acme": "acme"}).supported
+    assert detect("boards.greenhouse.io/acme/jobs/123").supported

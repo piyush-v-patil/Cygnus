@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -35,6 +36,14 @@ class BudgetExceeded(Exception):
 
 class LLMError(Exception):
     """The call failed in a way worth retrying next run (posting -> `error`)."""
+
+
+class LLMUnavailable(LLMError):
+    """Claude is unusable for every posting right now (key revoked, no credit, rate limit or
+    outage after the SDK's own retries): stop the run, do not count it against postings."""
+
+
+BILLING = ("credit", "billing", "balance", "quota", "payment")
 
 
 @dataclass
@@ -71,8 +80,8 @@ class AnthropicTransport:
         except (a.BadRequestError, a.AuthenticationError, a.PermissionDeniedError, a.NotFoundError):
             raise
         except (a.RateLimitError, a.APIStatusError, a.APIConnectionError) as e:
-            # the SDK already retried with backoff; give up on this posting for now
-            raise LLMError(f"Anthropic API: {e}") from e
+            # the SDK already retried with backoff: Claude is unavailable for now, not this posting
+            raise LLMUnavailable(f"Anthropic API: {type(e).__name__}: {str(e)[:200]}") from e
         u = msg.usage
         usage = {
             "input_tokens": u.input_tokens or 0,
@@ -106,26 +115,43 @@ class LLM:
         self._lock = threading.Lock()
         self._fallback_ok = cfg.server_fallback
         self.stopped = False          # set once the budget is hit mid-run
+        self._unpriced: set[str] = set()
 
     # ------------------------------------------------------------ pricing --
-    def price(self, model: str) -> tuple[float, float, float, float] | None:
-        p = self.cfg.pricing.get(model)
-        inp = out = None
+    def _known(self, model: str):
+        """(input, output, PriceCfg|None) for `model`, or None. A dated id
+        ("claude-sonnet-5-5-20260915") uses its base model's price."""
+        base = re.sub(r"-\d{8}$", "", model or "")
+        p = self.cfg.pricing.get(model) or self.cfg.pricing.get(base)
         if p is not None and p.input is not None and p.output is not None:
-            inp, out = p.input, p.output
-        elif model in KNOWN_PRICES:
-            inp, out = KNOWN_PRICES[model]
-        if inp is None:
-            return None
+            return p.input, p.output, p
+        known = [k for k in KNOWN_PRICES if base == k or base.startswith(k + "-")]
+        if known:
+            return (*KNOWN_PRICES[max(known, key=len)], p)
+        return None
+
+    def has_price(self, model: str) -> bool:
+        return self._known(model) is not None
+
+    def price(self, model: str) -> tuple[float, float, float, float]:
+        """Per-million-token prices. An unknown model is charged at the most expensive
+        known rate, never free, so the monthly budget always holds."""
+        found = self._known(model)
+        if found is None:
+            inp, out = max(KNOWN_PRICES.values())
+            p = self.cfg.pricing.get(model)
+            if model not in self._unpriced:
+                self._unpriced.add(model)
+                log.warning("no price for model %s: counting it at the highest known rate "
+                            "(set llm.pricing in profile.yaml to fix)", model)
+        else:
+            inp, out, p = found
         cr = p.cache_read if p is not None and p.cache_read is not None else inp * 0.1
         cw = p.cache_write if p is not None and p.cache_write is not None else inp * 1.25
         return inp, out, cr, cw
 
     def cost(self, model: str, usage: dict) -> float:
-        pr = self.price(model)
-        if pr is None:
-            return 0.0
-        inp, out, cr, cw = pr
+        inp, out, cr, cw = self.price(model)
         return (usage.get("input_tokens", 0) * inp + usage.get("output_tokens", 0) * out
                 + usage.get("cache_read_tokens", 0) * cr + usage.get("cache_write_tokens", 0) * cw) / 1e6
 
@@ -194,7 +220,10 @@ class LLM:
                 log.warning("server-side fallback rejected; continuing without it")
                 self._fallback_ok = False
                 res = self.transport.create(params, False)
-            elif name in ("BadRequestError", "AuthenticationError", "PermissionDeniedError", "NotFoundError"):
+            elif name in ("AuthenticationError", "PermissionDeniedError", "NotFoundError") or (
+                    name == "BadRequestError" and any(w in str(e).lower() for w in BILLING)):
+                raise LLMUnavailable(f"Claude is unavailable ({name}): {str(e)[:200]}") from e
+            elif name == "BadRequestError":
                 raise LLMError(f"{purpose}: {name}: {e}") from e
             else:
                 raise

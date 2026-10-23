@@ -1,7 +1,10 @@
 """Discord webhook notifications (§14). The webhook URL is a secret: never logged."""
 from __future__ import annotations
 
+import atexit
 import logging
+import queue
+import threading
 import time
 from collections import defaultdict
 from typing import Callable
@@ -29,21 +32,58 @@ def chunk_lines(lines: list[str], limit: int = MAX_CONTENT) -> list[str]:
 
 
 class Discord:
+    """With `background`, messages go out from one worker thread in order, so a slow or
+    rate-limited webhook never holds up filling forms; whatever is queued is sent
+    before the program exits (up to DRAIN_S)."""
+    DRAIN_S = 30
+
     def __init__(self, webhook_url: str | None, enabled: bool = True,
-                 post: Callable | None = None, sleep: Callable[[float], None] = time.sleep):
+                 post: Callable | None = None, sleep: Callable[[float], None] = time.sleep,
+                 background: bool = False):
         self.url = webhook_url
         self.enabled = bool(enabled and webhook_url)
         self._post = post or (lambda url, json: requests.post(url, json=json, timeout=20))
         self._sleep = sleep
         self.sent: list[str] = []
+        self._queue: queue.Queue | None = None
+        if background and self.enabled:
+            self._queue = queue.Queue()
+            threading.Thread(target=self._worker, name="discord", daemon=True).start()
+            atexit.register(self.drain)
 
     def send(self, content: str) -> bool:
+        """True when sent (or, in the background, queued)."""
         if not self.enabled:
             return False
+        if self._queue is not None:
+            self._queue.put(content)
+            return True
+        return self._send_now(content)
+
+    def _send_now(self, content: str) -> bool:
         ok = True
         for part in chunk_lines(content.splitlines() or [content]):
             ok = self._send_one(part) and ok
         return ok
+
+    def _worker(self):
+        while True:
+            content = self._queue.get()
+            try:
+                self._send_now(content)
+            except Exception as e:  # noqa: BLE001 - a notification must never take anything down
+                log.warning("Discord message not sent: %s", type(e).__name__)
+            finally:
+                self._queue.task_done()
+
+    def drain(self, timeout: float | None = None) -> bool:
+        """Wait until queued messages are out; False if still sending after `timeout`."""
+        if self._queue is None:
+            return True
+        end = time.monotonic() + (self.DRAIN_S if timeout is None else timeout)
+        while self._queue.unfinished_tasks and time.monotonic() < end:
+            time.sleep(0.05)
+        return not self._queue.unfinished_tasks
 
     def _send_one(self, content: str) -> bool:
         payload = {"content": content, "allowed_mentions": {"parse": []}}

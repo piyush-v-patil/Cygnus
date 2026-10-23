@@ -39,6 +39,8 @@ autoapply setup
 - **Fit cutoff.** Default 65, with an optional calibration run.
 - **Schedule.** Optional; see below.
 
+Keys, tokens and webhook URLs are typed hidden, so they can't end up in a screenshot. If a GitHub token is already saved, setup offers to replace it, for example after a leak. Running setup again keeps a dated copy of the old `profile.yaml` (`profile.yaml.<date>.bak`). It also keeps the settings it did not ask about, such as `review.port`, `workday.*` or `llm.pricing`.
+
 Before the first run:
 
 - **Sync your manual Applied marks.** Marks you made on the job-monitor dashboard stay in your browser until you add a GitHub token in the dashboard's ⚙ settings and they sync to `jobs.json`. Until then, the tool cannot see them and may re-attempt jobs you already applied to by hand.
@@ -157,11 +159,11 @@ With `schedule.mode: daily` or `twice_daily`, `autoapply schedule install` regis
 - It runs only while you are logged on, because the browser window is visible.
 - It has a 2-hour limit.
 
-A run missed while the PC was off is not made up. The next run carries on from the ledger. Only one run can happen at a time (`autoapply.lock`).
+A run missed while the PC was off is not made up. The next run carries on from the ledger. Only one run can happen at a time (`autoapply.lock`). An open `autoapply review` also holds the lock, so a scheduled run that starts while review is open is skipped and sends a Discord note. Close review (Ctrl+C) when you are done with it.
 
 ### Budget
 
-Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend.
+Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend. A model the table does not know, such as a new model id, is counted at the highest known rate, never as free; the health check says so. Set its price in `llm.pricing` to fix the count.
 
 - When this month's spend reaches `monthly_budget_usd`, the run stops before any Claude call and you get an alert.
 - If the budget runs out mid-run, the tool stops starting new calls and finishes what is in progress.
@@ -217,12 +219,18 @@ Posting states: `discovered → filtered_out | unsupported | enriched → closed
 | Simplify's "Before you autofill" card keeps coming back | Expected from Simplify itself (it resets on every browser start); the tool answers it from `browser.simplify_consent`. If it still shows, Simplify changed: see `apply_consent` in `autoapply/browser/simplify.py`. |
 | Many forms Stuck with `simplify_*` after a Simplify update | Re-run the Simplify step of `autoapply setup` to copy the new version. If the widget changed, update the selectors at the top of `autoapply/browser/simplify.py`. |
 | Health: *token rejected (expired?)* | Make a new fine-grained token and put it in `secrets.env` as `GITHUB_TOKEN=`. Pending write-backs are retried automatically. |
-| Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. |
+| Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. `autoapply review` still opens, with a note, so you can approve what is already filled. A failing GitHub token or Discord webhook doesn't block review either. |
 | Run stopped: *Simplify's legal answers disagree with your profile* | Your Simplify profile's sponsorship/authorization answers differ from `visa:` in profile.yaml. Fix whichever is wrong. The affected application is in Stuck. |
 | Stuck: `simplify_not_ready` / `simplify_did_not_fill` | Simplify's profile did not load, or its autofill filled nothing (the tool clicks up to 3 times). Check `autoapply browser` shows your Simplify profile, then `autoapply requeue --lane stuck` and run again. |
-| Stuck: `timed_out` | One form took longer than `browser.form_timeout_s` (default 7 min); the reason says which step. `autoapply requeue --lane stuck` to try again. |
+| Stuck: `timed_out` | One form took longer than `browser.form_timeout_s` (default 7 min; Workday `browser.workday_form_timeout_s`); the reason says which step. Time spent waiting for another form to finish with Simplify does not count. `autoapply requeue --lane stuck` to try again. |
 | The run looks frozen | It prints each application and step as it goes (`[2/3] Company - Title`, `Simplify autofill`, `asking Claude ...`); a Claude answer for long essays can take a minute. Nothing asks for confirmation during a run: approve afterwards in `autoapply review`. |
-| *Another autoapply run is in progress* | Only one run at a time. If none is running, delete `autoapply.lock` in the profile folder. |
+| *Another autoapply run is in progress* | Only one run at a time, and an open `autoapply review` counts as one. Close the review window's command prompt (Ctrl+C) first. Delete `autoapply.lock` in the profile folder only if nothing is running. |
+| *Configuration problem: profile.yaml: `x` is written twice* | A setting appears twice in profile.yaml, so it is not clear which one you meant. The message gives both line numbers: delete one. |
+| *answers.yaml entry N is skipped* | That saved answer has a typo (for example an unknown `kind:`). The others still work, and the entry is kept in the file until you fix it. |
+| *autoapply run stopped on an unexpected error* | The message names a `...-crash.log` in the profile's `logs` folder, and Discord gets an alert. Share that file (secrets are already removed) when asking for help. |
+| Review: *That did not work (...)* | An action failed. Nothing was submitted by the error, and the log has the details. If you closed the tool's browser window, the next action opens a new one. |
+| Review: *... is already submitted; nothing was changed* | You clicked a card from an older page or another tab after that application had moved on. Reload the page. |
+| Discord: *the H-1B list (h1b.json) could not be read* | New postings from that source wait for the next run instead of skipping the sponsor check. Postings already in progress continue. Usually a passing network problem. |
 | A job you applied to by hand was attempted | Sync your dashboard marks to `jobs.json` (see Setup), or Reject it in review. |
 
 ## Development
@@ -235,4 +243,4 @@ pytest -m "not browser"      # without Chromium
 
 The browser tests use `tests/fixtures/forms/*.html`, local copies of the Greenhouse, Ashby and Lever form structures, and a stand-in for a Workday apply flow (sign-in, pages, widgets, errors, Review, confirmation). LLM calls go through `FakeTransport`, so the tests never touch the network. A test-mode submit asserts that Submit is never clicked.
 
-**Terms of service.** Automating Simplify and ATS sites may conflict with their terms. You accept that risk by using this tool. LinkedIn postings are never attempted, and the tool never bypasses CAPTCHAs or creates accounts.
+**Terms of service.** Automating Simplify and ATS sites may conflict with their terms. You accept that risk by using this tool. LinkedIn postings are never attempted, and the tool never bypasses CAPTCHAs. It creates Workday accounts only with your own Workday login, and only while `workday.create_accounts` is on.

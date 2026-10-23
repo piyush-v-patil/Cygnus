@@ -124,7 +124,7 @@ def test_budget_stops_new_calls(make_ctx, transport):
     assert ctx.ledger.get("greenhouse:acme:1001").state == "enriched"      # picked up next month
 
 
-def test_fetch_errors_retry_then_stuck(make_ctx):
+def test_fetch_errors_retry_then_skip(make_ctx):
     ctx = make_ctx()
     sync(ctx, RunStats())
     cl, _ = clients(fail=["greenhouse:acme:1001"])
@@ -132,8 +132,8 @@ def test_fetch_errors_retry_then_stuck(make_ctx):
         enrich(ctx, RunStats(), None, cl)
         assert ctx.ledger.get("greenhouse:acme:1001").state == "error"
     enrich(ctx, RunStats(), None, cl)
-    assert ctx.ledger.get("greenhouse:acme:1001").state == "stuck"
-    assert "failed 3 times" in ctx.ledger.application("greenhouse:acme:1001")["stuck_reason"]
+    row = ctx.ledger.get("greenhouse:acme:1001")            # no form yet: nothing for you to review
+    assert row.state == "skipped" and row.reason == "failed_enrich"
 
 
 def test_run_no_fill_end_to_end(make_ctx, monkeypatch):
@@ -186,6 +186,18 @@ def test_cost_uses_profile_pricing_then_known_table(make_ctx):
         ctx.ledger.record_usage("x", "m", {}, 99, None)
         llm.call("score", "claude-haiku-5-5", [], "u")
 
+
+
+def test_dated_and_unknown_models_are_never_free(make_ctx, caplog):
+    llm = make_ctx().llm
+    one = {"input_tokens": 1_000_000}
+    assert llm.cost("claude-sonnet-5-5-20260915", one) == pytest.approx(KNOWN_PRICES["claude-sonnet-5-5"][0])
+    assert llm.has_price("claude-sonnet-5-5-20260915") and not llm.has_price("claude-mystery-9")
+    top = max(KNOWN_PRICES.values())[0]
+    with caplog.at_level("WARNING"):
+        assert llm.cost("claude-mystery-9", one) == pytest.approx(top)
+        llm.cost("claude-mystery-9", one)
+    assert sum("claude-mystery-9" in r.getMessage() for r in caplog.records) == 1
 
 RES = "Software Engineer, Acme Corp (2023 - present)\n- 3 years of Python experience building backend APIs"
 
@@ -294,6 +306,34 @@ def test_narrowed_roles_apply_to_already_scored_postings(make_ctx, transport):
     assert "greenhouse:acme:1001" in fill_candidates(ctx, None)             # nothing was lost
 
 
+
+def test_narrowed_location_applies_to_already_scored_postings(make_ctx, transport):
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    assert "greenhouse:acme:1001" in fill_candidates(ctx, None)
+    ctx.profile.filters.location, ctx.profile.filters.metros = "metros", ["Nowhere City"]
+    assert "greenhouse:acme:1001" not in fill_candidates(ctx, None)
+
+
+def test_unreadable_h1b_list_holds_new_postings_back(make_ctx, monkeypatch):
+    from autoapply.notify import Notifier
+    from autoapply.sources import SourceError
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    led = ctx.ledger
+    assert led.get("greenhouse:nofilings:5005").reason == "no_h1b_record"
+    warned = []
+    monkeypatch.setattr(Notifier, "warn", lambda self, m: warned.append(m))
+    src = ctx.sources[0]
+    monkeypatch.setattr(src, "h1b", lambda: (_ for _ in ()).throw(SourceError("h1b.json could not be read")))
+    st = RunStats()
+    sync(ctx, st)
+    assert led.get("greenhouse:nofilings:5005").reason == "no_h1b_record"     # not let back in
+    assert warned and st["source_skipped"] == 1
+
+
 PDF_RESUME = ("EXPERIENCE\nSoftware Engineer, Acme\n- 3 years of experi-\nence with Python and Go\n"
               "- Proﬁcient in AWS and Kubernetes\n- Led a team of 4 – payments migration")
 
@@ -376,6 +416,7 @@ def test_postings_already_scored_at_a_us_person_company_are_not_filled(make_ctx)
         led.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key,
                                     "company": company, "title": "SWE", "role": "software", "posted_at": "2026-10-20"})
         led.set_state(key, ENRICHED)
+        led.save_score(key, {"score": 80, "role_family": "software", "reasons": [], "blockers": []}, "m", "v", "h")
         led.set_state(key, SCORED)
     assert fill_candidates(ctx, None) == ["greenhouse:acme:2"]
 
@@ -390,6 +431,7 @@ def test_postings_left_mid_fill_are_queued_again_by_the_next_run(make_ctx, monke
     ctx.ledger.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key,
                                        "company": "Acme", "title": "SWE", "role": "software"})
     ctx.ledger.set_state(key, ENRICHED)
+    ctx.ledger.save_score(key, {"score": 80, "role_family": "software", "reasons": [], "blockers": []}, "m", "v", "h")
     ctx.ledger.set_state(key, SCORED)
     ctx.ledger.set_state(key, FILLING)               # the PC was closed while this form was open
     counts = run(ctx, no_fill=True)
@@ -404,6 +446,8 @@ def _stuck_posting(ctx, key, reason):
                                 "company": key, "title": "SWE", "role": "software"})
     for st in (ENRICHED, SCORED_STATE, FILLING):
         led.set_state(key, st)
+        if st == ENRICHED:
+            led.save_score(key, {"score": 80, "role_family": "software", "reasons": [], "blockers": []}, "m", "v", "h")
     led.upsert_application(key, lane=STUCK, stuck_reason=reason)
     led.set_state(key, STUCK, reason)
 
@@ -450,7 +494,7 @@ def test_claude_essays_only_for_open_questions(label, ftype, answer, ok):
 
 def test_tracker_changes_after_discovery_stop_waiting_postings(make_ctx, tmp_path):
     import json as _json
-    from autoapply.ledger import ENRICHED, READY
+    from autoapply.ledger import ENRICHED
     from .conftest import FIXTURES, base_profile
     jobs = _json.loads((FIXTURES / "jobs.json").read_text())
     path = tmp_path / "jobs.json"
@@ -476,3 +520,59 @@ def test_tracker_changes_after_discovery_stop_waiting_postings(make_ctx, tmp_pat
     sync(ctx2, st)
     assert ctx2.ledger.get(key).state == "closed" and ctx2.ledger.get(key).reason == "monitor_applied"
     assert ctx2.ledger.get(other).state == "scored" and st["tracker_closed"] == 1
+
+
+def test_claude_out_of_credit_stops_the_run_without_blaming_postings(make_ctx, monkeypatch):
+    import autoapply.ats as ats_pkg
+    from autoapply.llm import FakeTransport
+
+    class BadRequestError(Exception):
+        pass
+
+    def responder(params):
+        raise BadRequestError("Your credit balance is too low to access the Anthropic API.")
+    cl, _ = clients()
+    monkeypatch.setattr(ats_pkg, "clients", lambda http=None: cl)
+    ctx = make_ctx()
+    ctx._llm_transport = FakeTransport(responder)
+    counts = run(ctx, no_fill=True)
+    assert "unavailable" in counts["stopped"].lower()
+    assert ctx.ledger.counts().get("error", 0) == 0 and ctx.ledger.counts().get("stuck", 0) == 0
+
+
+def test_repeated_failures_before_a_form_skip_the_posting_instead_of_crashing(make_ctx):
+    from autoapply.ledger import ENRICHED, HELD
+    from autoapply.pipeline import fail
+    ctx = make_ctx()
+    led = ctx.ledger
+    key = "greenhouse:z:1"
+    led.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key, "company": "Z"})
+    st = RunStats()
+    led.set_state(key, ENRICHED)
+    for _ in range(3):                                   # three scoring failures in a row
+        fail(ctx, key, "score", "boom", st)
+    row = led.get(key)
+    assert row.state == "skipped" and row.reason == "failed_score"
+    key2 = "greenhouse:z:2"                              # progress resets the count
+    led.upsert_discovered(key2, {"source_name": ctx.profile.sources[0].label, "source_ref": key2, "company": "Z"})
+    fail(ctx, key2, "enrich", "x", st)
+    fail(ctx, key2, "enrich", "x", st)
+    led.set_state(key2, ENRICHED)
+    led.set_state(key2, HELD)
+    fail(ctx, key2, "score", "x", st)
+    assert led.get(key2).state == "error"
+
+
+def test_requeue_of_a_never_scored_posting_starts_it_over(make_ctx):
+    from autoapply.ledger import ENRICHED, FILLING, STUCK
+    ctx = make_ctx()
+    led = ctx.ledger
+    key = "greenhouse:y:1"
+    led.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key, "company": "Y"})
+    led.set_state(key, ENRICHED)
+    led.set_state(key, SCORED_STATE)
+    led.set_state(key, FILLING)
+    led.upsert_application(key, lane=STUCK, stuck_reason="score: boom")
+    led.set_state(key, STUCK, "score: boom")              # an old-style Stuck from before scoring
+    assert led.requeue_keys([key]) == [key] and led.get(key).state == "discovered"
+    assert key not in fill_candidates(ctx, None)

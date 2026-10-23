@@ -13,8 +13,12 @@ def extract_text(pdf: Path) -> str:
     if cache.exists() and cache.stat().st_mtime >= pdf.stat().st_mtime:
         return cache.read_text(encoding="utf-8")
     from pypdf import PdfReader
-    reader = PdfReader(str(pdf))
-    text = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    try:
+        reader = PdfReader(str(pdf))
+        text = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    except Exception as e:  # noqa: BLE001 - damaged, password-protected, not really a PDF
+        raise ConfigError(f"{pdf.name} could not be read ({type(e).__name__}): save it again as a "
+                          "normal PDF without a password") from e
     if not text:
         raise ConfigError(f"{pdf.name}: no extractable text (scanned PDF?). Export a text PDF.")
     cache.write_text(text, encoding="utf-8")

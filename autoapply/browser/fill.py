@@ -7,8 +7,11 @@ ever submitted here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import re
+import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +19,7 @@ from pathlib import Path
 from ..ats import application_url, form_hints, parse_key
 from ..config import Profile
 from ..ledger import ERROR, FILLING, NEEDS_INPUT, READY, SCORED, STUCK
-from ..llm import BudgetExceeded, LLMError
+from ..llm import BudgetExceeded, LLMError, LLMUnavailable
 from ..llm.answer import answer_fields
 from ..llm.cover_letter import render_pdf, write_cover_letter
 from ..normalize import normalize_question, slug
@@ -220,6 +223,54 @@ def simplify_turn() -> asyncio.Lock:
     return lock
 
 
+# the running form's time book: waiting for another form's turn does not count against its limit
+_turn_track: contextvars.ContextVar[dict | None] = contextvars.ContextVar("turn_track", default=None)
+
+
+@contextlib.asynccontextmanager
+async def my_turn(note: str):
+    """Hold Simplify's turn; the wait for it is booked as waiting, not as filling."""
+    turn = simplify_turn()
+    if turn.locked():
+        log.info(note)
+    t = _turn_track.get()
+    if t is not None:
+        t["waiting_since"] = time.monotonic()
+    try:
+        await turn.acquire()
+    finally:
+        if t is not None and "waiting_since" in t:
+            t["waited"] = t.get("waited", 0.0) + time.monotonic() - t.pop("waiting_since")
+    try:
+        yield
+    finally:
+        turn.release()
+
+
+async def within_limit(coro, limit: float, track: dict):
+    """`coro` with `limit` seconds of its own time: time spent waiting for another form's
+    turn (Simplify, or a Workday walk holding the front) is added back. TimeoutError past it."""
+    token = _turn_track.set(track)
+    task = asyncio.ensure_future(coro)
+    _turn_track.reset(token)
+    start = time.monotonic()
+    try:
+        while True:
+            waiting = time.monotonic() - track["waiting_since"] if "waiting_since" in track else 0.0
+            left = start + limit + track.get("waited", 0.0) + waiting - time.monotonic()
+            if left <= 0:
+                raise asyncio.TimeoutError
+            done, _ = await asyncio.wait({task}, timeout=min(left, 5.0))
+            if done:
+                return task.result()
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        raise
+
+
 async def open_workday(ctx, page, posting_key: str) -> None:
     """Open a Workday application ("Apply Manually"); the walk handles what it shows."""
     try:
@@ -230,10 +281,7 @@ async def open_workday(ctx, page, posting_key: str) -> None:
 
 
 async def run_simplify(ctx, page, hints: dict) -> None:
-    turn = simplify_turn()
-    if turn.locked():
-        log.info("    waiting for Simplify (one form at a time)")
-    async with turn:
+    async with my_turn("    waiting for Simplify (one form at a time)"):
         try:
             await page.bring_to_front()
         except Exception:  # noqa: BLE001 - a tab that cannot come forward still gets its try
@@ -528,7 +576,7 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             # §15.8 asks for the check after the first autofill; it is free, so every
             # form is checked - the first one that carries the question is the first check
             try:
-                out = await asyncio.wait_for(fill_one(ctx, bs, key, check_consistency=True, track=track), limit)
+                out = await within_limit(fill_one(ctx, bs, key, check_consistency=True, track=track), limit, track)
             except asyncio.TimeoutError:
                 err = Stuck("timed_out", f"no result after {int(limit)}s while {track.get('step', 'starting')}")
                 err.page = track.get("page")
@@ -555,6 +603,11 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             led.set_state(key, SCORED, None, "requeued: budget")
             state["stop"] = str(e)
             stats["stopped"] = str(e)
+        except LLMUnavailable as e:
+            page = getattr(e, "page", None)
+            led.set_state(key, SCORED, None, "requeued: Claude unavailable")
+            state["stop"] = f"Claude is unavailable: {e}"
+            stats["stopped"] = state["stop"]
         except LLMError as e:
             page = getattr(e, "page", None)
             log.info("    -> Error, will be retried next run: %s", e)

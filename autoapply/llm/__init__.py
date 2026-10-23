@@ -1,4 +1,4 @@
-from .client import LLM, AnthropicTransport, BudgetExceeded, FakeTransport, LLMError
+from .client import LLM, AnthropicTransport, BudgetExceeded, FakeTransport, LLMError, LLMUnavailable
 
 
 def make_llm(profile, ledger, secrets, transport=None) -> LLM:
@@ -10,4 +10,5 @@ def make_llm(profile, ledger, secrets, transport=None) -> LLM:
     return LLM(profile.llm, ledger, transport)
 
 
-__all__ = ["LLM", "AnthropicTransport", "BudgetExceeded", "FakeTransport", "LLMError", "make_llm"]
+__all__ = ["LLM", "AnthropicTransport", "BudgetExceeded", "FakeTransport", "LLMError", "LLMUnavailable",
+           "make_llm"]

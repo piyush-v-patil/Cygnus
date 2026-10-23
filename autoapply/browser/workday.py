@@ -69,14 +69,11 @@ async def in_front(page):
     """One Workday application at a time, in front from sign-in to Review. Simplify fills each
     new page by itself and pauses whenever its tab is hidden ("Please stay on this Workday
     page"), so no other form may take the front between pages."""
-    from .fill import simplify_turn
+    from .fill import my_turn
     if _holding_front.get():
         yield
         return
-    turn = simplify_turn()
-    if turn.locked():
-        log.info("    waiting for the browser's front (another form is using Simplify)")
-    async with turn:
+    async with my_turn("    waiting for the browser's front (another form is using Simplify)"):
         token = _holding_front.set(True)
         try:
             try:

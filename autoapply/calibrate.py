@@ -42,9 +42,17 @@ def best_cutoff(examples: list[dict], current: int = 65) -> tuple[int, float]:
 
 def set_cutoff_in_yaml(text: str, cutoff: int) -> str:
     """Change fit.cutoff in place so the user's comments in profile.yaml survive."""
-    pat = re.compile(r"(^fit:\s*\n(?:[ \t]+.*\n)*?[ \t]+cutoff:[ \t]*)(\d+)", re.M)
+    pat = re.compile(r"(^fit:[ \t]*(?:#.*)?\n(?:[ \t]+.*\n|[ \t]*\n)*?[ \t]+cutoff:[ \t]*)(\d+)", re.M)
     if pat.search(text):
         return pat.sub(lambda m: f"{m.group(1)}{cutoff}", text, count=1)
+    block = re.search(r"^fit:[ \t]*(#.*)?\n((?:[ \t]*#.*\n|[ \t]*\n)*)([ \t]+)\S", text, re.M)
+    if block:                         # fit: without a cutoff: add it to that section, not a second one
+        at = text.index("\n", block.start()) + 1
+        return text[:at] + f"{block.group(3)}cutoff: {cutoff}\n" + text[at:]
+    flow = re.search(r"^fit:[ \t]*\{(.*)\}[ \t]*$", text, re.M)
+    if flow:
+        inner = re.sub(r"(^|,)\s*cutoff\s*:\s*\d+\s*(?=,|$)", r"\1", flow.group(1)).strip(" ,")
+        return text[:flow.start()] + f"fit: {{{inner + ', ' if inner else ''}cutoff: {cutoff}}}" + text[flow.end():]
     return text.rstrip("\n") + f"\nfit:\n  cutoff: {cutoff}\n"
 
 

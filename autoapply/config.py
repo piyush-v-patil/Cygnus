@@ -5,6 +5,7 @@ Everything personal lives in the profile folder (default ~/.autoapply, or
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import date
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .normalize import normalize_question
 
+log = logging.getLogger(__name__)
 ENV_HOME = "AUTOAPPLY_HOME"
 SECRET_KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DISCORD_WEBHOOK_URL", "WORKDAY_EMAIL", "WORKDAY_PASSWORD")
 
@@ -223,11 +225,35 @@ class Profile(_Strict):
         return next((s for s in self.sources if s.type == "jobmonitor" and s.writeback), None)
 
 
+class _UniqueKeys(yaml.SafeLoader):
+    """A key written twice in the same section is an error, not "the last one wins"."""
+
+
+def _unique_mapping(loader, node, deep=False):
+    seen: dict = {}
+    for k, _ in node.value:
+        key = loader.construct_object(k, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"`{key}` is written twice (lines {seen[key] + 1} and {k.start_mark.line + 1}): "
+                "keep one and delete the other", k.start_mark)
+        seen[key] = k.start_mark.line
+    return loader.construct_mapping(node, deep=deep)
+
+
+_UniqueKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
+def read_yaml(path: Path):
+    """YAML a person edits: a Notepad byte-order mark is fine, a repeated key is not."""
+    return yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_UniqueKeys)  # noqa: S506 - SafeLoader subclass
+
+
 def load_profile(paths: Paths) -> Profile:
     if not paths.profile.exists():
         raise ConfigError(f"No profile at {paths.profile}. Run `autoapply setup` first.")
     try:
-        data = yaml.safe_load(paths.profile.read_text(encoding="utf-8")) or {}
+        data = read_yaml(paths.profile) or {}
         return Profile.model_validate(data)
     except yaml.YAMLError as e:
         raise ConfigError(f"profile.yaml is not valid YAML: {e}") from e
@@ -245,7 +271,7 @@ def load_secrets(paths: Paths) -> dict[str, str]:
     """KEY=VALUE lines from secrets.env; real environment variables win."""
     out: dict[str, str] = {}
     if paths.secrets.exists():
-        for line in paths.secrets.read_text(encoding="utf-8").splitlines():
+        for line in paths.secrets.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -258,7 +284,7 @@ def load_secrets(paths: Paths) -> dict[str, str]:
 
 
 def save_secret(paths: Paths, key: str, value: str) -> None:
-    lines = paths.secrets.read_text(encoding="utf-8").splitlines() if paths.secrets.exists() else []
+    lines = paths.secrets.read_text(encoding="utf-8-sig").splitlines() if paths.secrets.exists() else []
     lines = [ln for ln in lines if not ln.strip().startswith(f"{key}=")]
     lines.append(f"{key}={value}")
     paths.secrets.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -283,16 +309,41 @@ class Answer(BaseModel):
     added: date = Field(default_factory=date.today)
     source: Literal["user", "wizard"] = "user"
 
+    @field_validator("question", "original", "answer", mode="before")
+    @classmethod
+    def _text(cls, v):
+        # hand edits: `answer: yes` reads as True and `answer: 3` as a number
+        if isinstance(v, bool):
+            return "Yes" if v else "No"
+        return str(v) if isinstance(v, (int, float)) else v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_question(cls, d):
+        if isinstance(d, dict) and d.get("original") and not d.get("question"):
+            d = {**d, "question": normalize_question(str(d["original"]))}
+        return d
+
 
 class AnswerBank:
     def __init__(self, path: Path):
         self.path = path
         self.items: list[Answer] = []
+        self._unreadable: list = []        # hand-edited entries we could not use, kept as written
         if path.exists():
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+            try:
+                raw = read_yaml(path) or []
+            except yaml.YAMLError as e:
+                raise ConfigError(f"answers.yaml is not valid YAML: {e}") from e
             if not isinstance(raw, list):
-                raise ConfigError("answers.yaml must be a list of entries")
-            self.items = [Answer.model_validate(r) for r in raw]
+                raise ConfigError("answers.yaml must be a list of entries (each starting with `- `)")
+            for i, r in enumerate(raw):
+                try:
+                    self.items.append(Answer.model_validate(r))
+                except ValueError as e:
+                    self._unreadable.append(r)
+                    log.warning("answers.yaml entry %d is skipped (fix it to use it): %s", i + 1,
+                                str(e).splitlines()[0] if str(e) else type(e).__name__)
 
     def lookup(self, label: str, kind: str, options: list[str] | None = None) -> str | None:
         """Strict v1 match: exact normalized question + compatible kind (§8.5.1)."""
@@ -318,7 +369,7 @@ class AnswerBank:
         return entry
 
     def save(self) -> None:
-        data = [a.model_dump(mode="json") for a in self.items]
+        data = [a.model_dump(mode="json") for a in self.items] + self._unreadable
         self.path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
