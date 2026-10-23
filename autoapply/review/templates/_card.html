@@ -49,10 +49,12 @@
     {% if lane == 'ready' %}
       <form class="inline" method="post" action="/app/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="primary">Approve &amp; submit</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>Open form to check</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>I submitted it</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="danger">Reject</button></form>
     {% elif lane == 'needs_input' %}
       <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button>Open form</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/from-form"><input type="hidden" name="csrf" value="{{csrf}}"><button title="Answer the questions in the form itself, then click this to pick the answers up">I answered in the form</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button>I submitted it</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button class="danger">Reject</button></form>
     {% elif lane == 'stuck' %}
       <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button class="primary">Open form</button></form>

@@ -159,3 +159,22 @@ def test_approve_in_test_mode_through_the_ui(make_ctx, tmp_path):
         assert "would_submit" in r.text, r.text[:2000]
         c.portal.call(app.state.session.close)
     assert ctx.ledger.get(GH).state == "would_submit"
+
+
+def test_i_submitted_it_from_ready_and_needs_input(client):
+    from autoapply.ledger import SUBMITTED_MANUAL
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    needs_input_app(client.ctx, "greenhouse:b:2", "Beta", extra_missing=[       # stays in Needs input
+        {"key": "id:x", "label": "Salary expectation", "kind": "text", "answer_kind": "short_text",
+         "options": [], "required": True, "reason": "", "question": "salary expectation"}])
+    save_answers(client.ctx.ledger, client.ctx.answers, "greenhouse:a:1", {"id:q105": "Yes"})
+    assert client.ctx.ledger.get("greenhouse:a:1").state == READY
+    page = client.get("/lane/ready").text
+    assert page.count("I submitted it") == 1
+    for key, lane in (("greenhouse:a:1", "ready"), ("greenhouse:b:2", "needs_input")):
+        app_id = client.ctx.ledger.application(key)["id"]
+        r = client.post(f"/app/{app_id}/manual", data={"csrf": client.csrf, "lane": lane}, follow_redirects=False)
+        assert r.headers["location"].startswith(f"/lane/{lane}?")
+        assert client.ctx.ledger.get(key).state == SUBMITTED_MANUAL
+    pend = client.ctx.ledger.pending_writebacks(client.ctx.profile.sources[0].label)
+    assert [p["change"]["status"] for p in pend[-2:]] == ["applied", "applied"]

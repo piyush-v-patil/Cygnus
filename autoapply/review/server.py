@@ -315,14 +315,14 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         return _back(lane, f"{p.get('company')} - {p.get('title')}: {res['state']} ({res['detail']})", app_id)
 
     @app.post("/app/{app_id}/manual")
-    async def manual(app_id: int, csrf: str = Form("")):
+    async def manual(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
+        """You sent it yourself in the form's tab (e.g. after a code or check there)."""
         check_csrf(csrf)
         from ..browser.submit import mark_manual
-        async with sess.lock:
-            bs = await sess.browser()
-            await mark_manual(ctx, bs, _key(app_id))
+        async with sess.lock:                  # no browser needed: it records, and screenshots an open tab
+            await mark_manual(ctx, None, _key(app_id))
         sess.manual += 1
-        return _back(STUCK, "Recorded as submitted by hand.")
+        return _back(lane if lane in LANES else STUCK, "Recorded as submitted by hand.")
 
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):
