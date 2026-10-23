@@ -357,6 +357,16 @@ class Ledger:
         r = self.db.execute("SELECT * FROM runs WHERE kind=? ORDER BY id DESC LIMIT 1", (kind,)).fetchone()
         return dict(r) if r else None
 
+    def recover_interrupted(self) -> list[str]:
+        """Postings left in `filling` by a run that was closed or crashed mid-form go back to
+        `scored`, so the next fill picks them up. Only one run happens at a time (RunLock),
+        so at the start of a run nothing can really be filling."""
+        keys = [r.posting_key for r in self.postings_in([FILLING])]
+        with self.tx():
+            for k in keys:
+                self.set_state(k, SCORED, None, "interrupted mid-fill; queued again")
+        return keys
+
     def requeue(self, lanes: Iterable[str]) -> list[str]:
         """Send unsubmitted applications back to `scored` so the next run fills them afresh.
 

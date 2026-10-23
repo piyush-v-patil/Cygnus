@@ -307,6 +307,10 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
     stats = RunStats()
     error = None
     try:
+        back = led.recover_interrupted()
+        if back:
+            stats["interrupted"] = len(back)
+            log.info("%d application(s) were mid-fill when the last run stopped; they are queued again", len(back))
         sync(ctx, stats)
         release_low_fit(ctx, stats)
         enrich(ctx, stats, limit)
@@ -334,6 +338,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
 
 # what each run counter means, in the order a posting meets them
 RUN_LINES = [
+    ("interrupted", "left mid-fill by a closed run, queued again"),
     ("new", "new jobs found in your sources"),
     ("eligible", "jobs waiting to be looked at (passed the free filters)"),
     ("filtered_out", "filtered out by the free rules"),
