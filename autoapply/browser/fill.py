@@ -465,8 +465,11 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     from .launch import BrowserSession
     from ..pipeline import fail
     led = ctx.ledger
-    pending = list(keys)                      # newest first, as selected
+    # newest first, as selected; Workday last: each one holds the browser's front for its
+    # whole walk, so single-page forms go first instead of waiting behind it
+    pending = [k for k in keys if not k.startswith("workday:")] + [k for k in keys if k.startswith("workday:")]
     busy: set[str] = set()                    # companies with a form in flight
+    busy_keys: set[str] = set()               # the postings in flight
     state = {"stop": None, "probe_done": not getattr(ctx, "simplify_probe_pending", False)}
 
     def company(k: str) -> str:
@@ -541,7 +544,10 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
         while not state["stop"]:
             # one in-flight form per company (§8.1); asyncio is single-threaded,
             # so nothing can slip in between this check and busy.add()
-            key = next((k for k in pending if company(k) not in busy), None)
+            # one company at a time, and one Workday application at a time (it needs the front)
+            wd_busy = any(b.startswith("workday:") for b in busy_keys)
+            key = next((k for k in pending if company(k) not in busy
+                        and not (wd_busy and k.startswith("workday:"))), None)
             if key is None:
                 if not pending:
                     return
@@ -550,10 +556,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             pending.remove(key)
             co = company(key)
             busy.add(co)
+            busy_keys.add(key)
             try:
                 await handle(bs, key)
             finally:
                 busy.discard(co)
+                busy_keys.discard(key)
 
     async def go(bs):
         if not state["probe_done"] and pending:

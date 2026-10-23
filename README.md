@@ -106,7 +106,7 @@ Three things are not written back:
 
 ### Workday
 
-Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. **You create the accounts. Cygnus never does.** Use the same email and password everywhere. Cygnus signs in with them.
+Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. If Workday wants the email address verified first, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
 
 1. `autoapply workday login` saves the email and password to `secrets.env`; they are hidden in logs. `autoapply setup` asks for them too.
 2. Add `workday` to `filters.ats_allowed` in `profile.yaml`.
@@ -123,6 +123,7 @@ A Workday application is several pages: My Information, My Experience, Applicati
 - The tab may be gone by approval time. Workday keeps the unfinished application in your account, so Cygnus reopens it and walks to Review again with your answers.
 - After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* instead of being recorded as applied.
 - A Workday form can take 5–10 minutes. `browser.workday_form_timeout_s` (900 s by default) is the limit per form.
+- **One Workday application at a time.** Simplify fills each new Workday page by itself and pauses while its tab is hidden ("Please stay on this Workday page"). So a Workday application keeps the front of the tool's browser from sign-in to Review, and the next one waits. Greenhouse, Ashby and Lever forms in the same run are filled first.
 
 ### After Submit
 

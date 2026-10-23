@@ -18,6 +18,8 @@ follow Workday's formField-* blocks as used by Simplify 3.1.10's Workday selecto
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import re
 from datetime import datetime, timezone
@@ -38,6 +40,9 @@ EMAIL = 'input[data-automation-id="email"]'
 PASSWORD = 'input[data-automation-id="password"]'
 SIGN_IN_SUBMIT = '[data-automation-id="signInSubmitButton"]'
 CLICK_FILTER = '[data-automation-id="click_filter"]'        # the overlay that takes the sign-in click
+CREATE_LINK = '[data-automation-id="createAccountLink"]'
+CREATE_AGREE = 'input[data-automation-id="createAccountCheckbox"]'
+CREATE_SUBMIT = '[data-automation-id="createAccountSubmitButton"]'
 ERROR = '[data-automation-id="errorMessage"]'
 JOB_APPLY = 'a[data-automation-id="adventureButton"]'
 APPLY_MANUALLY = '[data-automation-id="applyManually"]'
@@ -53,6 +58,34 @@ SUCCESS_TEXT = re.compile(r"application (submitted|sent)|thank you for applying|
 SUCCESS = '[data-automation-id="candidateHomeTaskModal"], [role="dialog"] svg.wd-icon-check-circle'
 MAX_PAGES = 12
 ACCOUNTS_KEY = "workday_accounts"
+
+
+# set while a Workday application holds the front of the browser for its whole walk
+_holding_front = contextvars.ContextVar("workday_holding_front", default=False)
+
+
+@contextlib.asynccontextmanager
+async def in_front(page):
+    """One Workday application at a time, in front from sign-in to Review. Simplify fills each
+    new page by itself and pauses whenever its tab is hidden ("Please stay on this Workday
+    page"), so no other form may take the front between pages."""
+    from .fill import simplify_turn
+    if _holding_front.get():
+        yield
+        return
+    turn = simplify_turn()
+    if turn.locked():
+        log.info("    waiting for the browser's front (another form is using Simplify)")
+    async with turn:
+        token = _holding_front.set(True)
+        try:
+            try:
+                await page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+            yield
+        finally:
+            _holding_front.reset(token)
 
 
 class NeedsInputError(Exception):
@@ -90,6 +123,10 @@ def set_account(ctx, posting_key: str, status: str, note: str = "", password: st
     if password:
         acc[account_key(posting_key)]["password"] = password
     ctx.state_set(ACCOUNTS_KEY, acc)
+
+
+def account_status(ctx, posting_key: str) -> str | None:
+    return accounts(ctx).get(account_key(posting_key), {}).get("status")
 
 
 def account_blocked(ctx, posting_key: str) -> bool:
@@ -219,6 +256,104 @@ async def _email_form(page, company: str) -> None:
     await page.wait_for_timeout(2500)
 
 
+def password_problems(pw: str) -> list[str]:
+    """Workday's password rules, as its Create Account form lists them (live tenant, 2026-10-23)."""
+    out = []
+    if len(pw) < 8:
+        out.append("at least 8 characters")
+    if not re.search(r"[A-Za-z]", pw):
+        out.append("a letter")
+    if not re.search(r"\d", pw):
+        out.append("a number")
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        out.append("a special character")
+    return out
+
+
+async def _click_create(page) -> None:
+    overlays = page.locator(f"{CLICK_FILTER}[aria-label='Create Account']")
+    target = overlays if await overlays.count() and await overlays.first.is_visible() else page.locator(CREATE_SUBMIT)
+    await target.first.click(force=True)
+
+
+async def create_account(ctx, page, posting_key: str, email: str, password: str) -> None:
+    """Create the account at this company with your Workday login, wait, and sign in with it.
+    Raises Stuck when Workday wants an email verification or says the account exists."""
+    company = company_of(posting_key)
+    weak = password_problems(password)
+    if weak:
+        raise _stuck("workday_sign_in_failed", f"cannot create an account at {company}: Workday passwords need "
+                     f"{', '.join(weak)}. Pick a new one with `autoapply workday login`")
+    log.info("    no account at %s's Workday yet: creating it with your Workday login", company)
+    await page.reload(wait_until="domcontentloaded")
+    await wait_state(page, ctx.profile.browser.page_timeout_s)
+    if await _visible(page, EMAIL_SIGN_IN):
+        await page.locator(EMAIL_SIGN_IN).first.click()
+    try:
+        await page.locator(CREATE_LINK).first.wait_for(state="visible", timeout=15000)
+        await page.locator(CREATE_LINK).first.click()
+        await page.locator(VERIFY_PASSWORD).first.wait_for(state="visible", timeout=15000)
+    except Exception:  # noqa: BLE001
+        raise _stuck("workday_sign_in_failed", f"no Create Account form on {company}'s Workday page") from None
+    await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
+    loop = asyncio.get_running_loop()
+    text = None
+    for attempt in range(3):
+        await page.locator(EMAIL).first.fill(email)
+        await page.locator(PASSWORD).first.fill(password)
+        await page.locator(VERIFY_PASSWORD).first.fill(password)
+        agree = page.locator(CREATE_AGREE)
+        if await agree.count() and not await agree.first.is_checked():
+            await agree.first.click(force=True)
+        await _click_create(page)
+        deadline = loop.time() + 20
+        while loop.time() < deadline:
+            await asyncio.sleep(0.75)
+            if await _visible(page, ERROR):
+                text = " ".join((await page.locator(ERROR).first.inner_text()).split())
+                break
+            if not await _visible(page, VERIFY_PASSWORD):       # the form went: created
+                text = ""
+                break
+        if text is not None:
+            break
+        log.info("    Create Account did not respond; trying again (%d of 3)", attempt + 2)
+    if text is None:
+        raise _stuck("workday_sign_in_failed", f"creating the account at {company} did not finish")
+    if text:
+        if re.search(r"verif", text, re.I):
+            set_account(ctx, posting_key, "verify_email", text)
+            raise _stuck("workday_verify_email", f"{company}: account created - verify your email first ({text})")
+        set_account(ctx, posting_key, "no_account", text)
+        raise _stuck("workday_sign_in_failed",
+                     f"{company} did not create the account ({text}). If it says the account exists, its "
+                     "password is not your Workday password: use Forgot your password on the sign-in page "
+                     "and set it to yours, then `autoapply requeue --lane stuck`")
+    set_account(ctx, posting_key, "created")
+    if not await _visible(page, SIGN_IN):
+        set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
+        log.info("    created the account at %s and Workday signed you in", company)
+        return
+    wait = ctx.profile.workday.after_create_wait_s
+    log.info("    created the account at %s; signing in after %ss", company, int(wait))
+    await page.wait_for_timeout(wait * 1000)
+    await page.reload(wait_until="domcontentloaded")
+    if await wait_state(page, ctx.profile.browser.page_timeout_s) != "signin":
+        set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
+        return
+    await _email_form(page, company)
+    text = await _attempt(page, email, password)
+    if text is None:
+        set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
+        log.info("    signed in to %s's new account", company)
+        return
+    status = "verify_email" if re.search(r"verif", text, re.I) else "no_account"
+    set_account(ctx, posting_key, status, text)
+    raise _stuck("workday_verify_email" if status == "verify_email" else "workday_sign_in_failed",
+                 f"{company}: the account was created but signing in failed ({text}). If Workday emailed you "
+                 "a verification link, click it, then `autoapply requeue --lane stuck`")
+
+
 async def sign_in(ctx, page, posting_key: str) -> None:
     email, password = ctx.secrets.get("WORKDAY_EMAIL"), ctx.secrets.get("WORKDAY_PASSWORD")
     company = company_of(posting_key)
@@ -240,6 +375,8 @@ async def sign_in(ctx, page, posting_key: str) -> None:
         if re.search(r"verif", text, re.I):
             set_account(ctx, posting_key, "verify_email", text)
             raise _stuck("workday_verify_email", f"{company}: verify your email first ({text})")
+    if ctx.profile.workday.create_accounts and account_status(ctx, posting_key) not in ("created",):
+        return await create_account(ctx, page, posting_key, email, password)
     set_account(ctx, posting_key, "no_account", text)
     raise _stuck("workday_sign_in_failed", NOT_ACCEPTED.format(company=company, text=text))
 
@@ -250,11 +387,7 @@ async def simplify_page(ctx, page, hints: dict) -> None:
     page by itself about 1.5 s after it renders (continuous mode, on by default), so wait
     for that fill before clicking Autofill; a click during a fill is ignored anyway."""
     from . import simplify
-    from .fill import simplify_turn
-    turn = simplify_turn()
-    if turn.locked():
-        log.info("    waiting for Simplify (one form at a time)")
-    async with turn:
+    async with in_front(page):
         try:
             await page.bring_to_front()
         except Exception:  # noqa: BLE001
@@ -442,10 +575,11 @@ async def fill_application(ctx, page, posting_key, resume_name, resume_path, res
     plan: list = []
     missing: list[dict] = []
     generated: list[str] = []
-    await open_workday(ctx, page, posting_key)
-    await walk(ctx, page, posting_key, plan, missing, generated, resume_name=resume_name,
-               resume_path=resume_path, resume_text=resume_text, posting=posting, desc=desc,
-               check_consistency=check_consistency, track=track)
+    async with in_front(page):
+        await open_workday(ctx, page, posting_key)
+        await walk(ctx, page, posting_key, plan, missing, generated, resume_name=resume_name,
+                   resume_path=resume_path, resume_text=resume_text, posting=posting, desc=desc,
+                   check_consistency=check_consistency, track=track)
     shot = await safe_screenshot(page, ctx.paths.screenshots / f"{slug(posting_key, 80)}.png")
     corrected = [p.label for p in plan if getattr(p, "note", None)]
     return FillOutcome(lane=NEEDS_INPUT if missing else READY, plan=[p.to_dict() for p in plan],
@@ -465,10 +599,11 @@ async def resume(ctx, page, posting_key: str) -> bool:
     row = led.get(posting_key)
     res = app.get("resume_file")
     det = led.details(posting_key) or {}
-    on_review = await walk(ctx, page, posting_key, plan, missing, [], known=known_answers(old),
-                           resume_name=res, resume_path=ctx.resumes.path(res) if res else None,
-                           resume_text=ctx.resumes.text(res) if res else "", posting=dict(row.data),
-                           desc=det.get("description_text") or "", skip_simplify_first=True)
+    async with in_front(page):
+        on_review = await walk(ctx, page, posting_key, plan, missing, [], known=known_answers(old),
+                               resume_name=res, resume_path=ctx.resumes.path(res) if res else None,
+                               resume_text=ctx.resumes.text(res) if res else "", posting=dict(row.data),
+                               desc=det.get("description_text") or "", skip_simplify_first=True)
     led.upsert_application(posting_key, fill_plan=merge_plan(old, [p.to_dict() for p in plan]), missing=missing)
     lane = READY if on_review and not missing else NEEDS_INPUT
     if led.get(posting_key).state != lane:
@@ -484,15 +619,16 @@ async def replay(ctx, bs, app: dict):
     old = app.get("fill_plan") or []
     page = await bs.new_page()
     try:
-        await open_workday(ctx, page, key)
         plan = [PlanEntry(**{k: v for k, v in e.items() if k in PlanEntry.__dataclass_fields__}) for e in old]
         missing: list[dict] = []
         res = app.get("resume_file")
-        on_review = await walk(ctx, page, key, plan, missing, [], known=known_answers(old), resume_name=res,
-                               resume_path=ctx.resumes.path(res) if res else None,
-                               resume_text=ctx.resumes.text(res) if res else "",
-                               posting=dict(ctx.ledger.get(key).data),
-                               desc=(ctx.ledger.details(key) or {}).get("description_text") or "")
+        async with in_front(page):
+            await open_workday(ctx, page, key)
+            on_review = await walk(ctx, page, key, plan, missing, [], known=known_answers(old), resume_name=res,
+                                   resume_path=ctx.resumes.path(res) if res else None,
+                                   resume_text=ctx.resumes.text(res) if res else "",
+                                   posting=dict(ctx.ledger.get(key).data),
+                                   desc=(ctx.ledger.details(key) or {}).get("description_text") or "")
         if missing or not on_review:
             raise NeedsInputError(missing, merge_plan(old, [p.to_dict() for p in plan]))
         return page

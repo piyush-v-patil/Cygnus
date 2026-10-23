@@ -92,16 +92,53 @@ function emailForm() {
     <button data-automation-id="createAccountLink">Create Account</button>
     <input type="text" data-automation-id="beecatcher" style="display:none"></form>`;
   const go = () => {
-    const ok = c.querySelector('[data-automation-id=email]').value === (PARAMS.get("email") || "jane@example.com")
-      && c.querySelector('[data-automation-id=password]').value === (PARAMS.get("pw") || "Correct-Horse-1!");
+    const em = c.querySelector('[data-automation-id=email]').value, pw = c.querySelector('[data-automation-id=password]').value;
+    const ok = (!PARAMS.get("noaccount") && em === (PARAMS.get("email") || "jane@example.com")
+                && pw === (PARAMS.get("pw") || "Correct-Horse-1!")) || created()[em] === pw;
     setTimeout(() => {
+      if (ok && PARAMS.get("verify")) { error(c, "Please verify your account by clicking the link in the email we sent you."); return; }
       if (ok) { step = 1; render(); return; }
-      c.querySelector('[data-automation-id=errorSlot]').innerHTML =
-        `<div data-automation-id="errorMessage">You may have entered the wrong email address or password or your account might be locked.</div>`;
+      error(c, "You may have entered the wrong email address or password or your account might be locked.");
     }, 300);
   };
   c.querySelector('[data-automation-id=click_filter]').onclick = go;
   c.querySelector('[data-automation-id=signInSubmitButton]').onclick = go;
+  c.querySelector('[data-automation-id=createAccountLink]').onclick = createForm;
+}
+
+// accounts made on this "site" survive reloads, as a real tenant's do
+const created = () => JSON.parse(sessionStorage.getItem("wd_accounts") || "{}");
+function error(c, text) {
+  c.querySelector('[data-automation-id=errorSlot]').innerHTML = `<div data-automation-id="errorMessage">${text}</div>`;
+}
+function createForm() {
+  const c = document.querySelector('[data-automation-id=signInContent]');
+  c.innerHTML = `<h2>Create Account</h2><div data-automation-id="errorSlot"></div>
+    <form data-automation-id="signInFormo" onsubmit="return false">
+    <div data-automation-id="formField-email"><label>Email Address*</label><input type="text" data-automation-id="email"></div>
+    <div data-automation-id="formField-password"><label>Password*</label><input type="password" data-automation-id="password"></div>
+    <div data-automation-id="formField-verifyPassword"><label>Verify New Password*</label><input type="password" data-automation-id="verifyPassword"></div>
+    <div data-automation-id="formField-"><label>I agree</label><input type="checkbox" data-automation-id="createAccountCheckbox"></div>
+    <div data-automation-id="noCaptchaWrapper"><div data-automation-id="click_filter" aria-label="Create Account"></div>
+      <button type="submit" data-automation-id="createAccountSubmitButton">Create Account</button></div>
+    <button data-automation-id="signInLink">Sign In</button></form>`;
+  const go = () => {
+    const em = c.querySelector('[data-automation-id=email]').value, pw = c.querySelector('[data-automation-id=password]').value;
+    setTimeout(() => {
+      if (!c.querySelector('[data-automation-id=createAccountCheckbox]').checked) { error(c, "You must agree to continue."); return; }
+      if (pw !== c.querySelector('[data-automation-id=verifyPassword]').value) { error(c, "The passwords do not match."); return; }
+      const have = created();
+      if (have[em] !== undefined || (!PARAMS.get("noaccount") && em === (PARAMS.get("email") || "jane@example.com"))) {
+        error(c, "An account with this email address already exists."); return;
+      }
+      have[em] = pw; sessionStorage.setItem("wd_accounts", JSON.stringify(have));
+      window.__created = (window.__created || 0) + 1;
+      render();                                    // back to Sign In, as many tenants do
+    }, 300);
+  };
+  c.querySelector('[data-automation-id=click_filter]').onclick = go;
+  c.querySelector('[data-automation-id=createAccountSubmitButton]').onclick = go;
+  c.querySelector('[data-automation-id=signInLink]').onclick = () => render();
 }
 
 // ---- widgets ----

@@ -73,3 +73,7 @@ testing:
 
 review:
   port: 8765
+
+workday:
+  create_accounts: true             # login refused -> create the account with your Workday login, then sign in
+  after_create_wait_s: 5
