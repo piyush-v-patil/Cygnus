@@ -197,6 +197,13 @@ class ReviewCfg(_Strict):
     port: int = 8765
 
 
+class WorkdayCfg(_Strict):
+    # when your Workday login is refused at a company, create the account there with it,
+    # wait, and sign in (false: you create accounts yourself with `autoapply workday open`)
+    create_accounts: bool = True
+    after_create_wait_s: float = Field(5, ge=0, le=60)
+
+
 class Profile(_Strict):
     sources: list[SourceCfg]
     filters: FiltersCfg = FiltersCfg()
@@ -209,6 +216,7 @@ class Profile(_Strict):
     notifications: NotificationsCfg = NotificationsCfg()
     testing: TestingCfg = TestingCfg()
     review: ReviewCfg = ReviewCfg()
+    workday: WorkdayCfg = WorkdayCfg()
 
     @property
     def writeback_source(self) -> SourceCfg | None:

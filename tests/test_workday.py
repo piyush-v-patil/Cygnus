@@ -107,11 +107,12 @@ def simplify_mock(sponsorship="Yes"):
 
 @pytest.fixture
 def wctx(make_ctx, tmp_path):
-    def _make(password="Correct-Horse-1!", test_mode=True, sponsorship="Yes"):
+    def _make(password="Correct-Horse-1!", test_mode=True, sponsorship="Yes", params=""):
         ctx = make_ctx(test_mode=test_mode, secrets=dict(LOGIN))
         ctx.profile.filters.ats_allowed = ["greenhouse", "ashby", "lever", "workday"]
+        ctx.profile.workday.after_create_wait_s = 0.5
         ctx.browser_overrides = {"headless": True, "extension": False, "user_data_dir": tmp_path / "bp"}
-        url = (FORMS / "workday.html").resolve().as_uri() + f"?email=jane@example.com&pw={password}"
+        url = (FORMS / "workday.html").resolve().as_uri() + f"?email=jane@example.com&pw={password}{params}"
         ctx.form_url_for = lambda key: url
         ctx.simplify_mock = simplify_mock(sponsorship)
         ctx.keep_tabs = True
@@ -283,3 +284,102 @@ def test_sign_in_failure_explains_the_usual_causes():
     from autoapply.browser.workday import NOT_ACCEPTED
     msg = NOT_ACCEPTED.format(company="capitalone", text="wrong email or password")
     assert "Forgot your password" in msg and "verified" in msg and "workday open capitalone" in msg
+
+
+
+def _fill(ctx, key=WD):
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [key], RunStats(), session=bs)
+    asyncio.run(go())
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_no_account_yet_creates_one_waits_and_signs_in(wctx):
+    from autoapply.browser.workday import accounts
+    ctx = wctx(params="&noaccount=1")
+    seed(ctx, WD)
+    _fill(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason      # signed in, walked on
+    acc = accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]
+    assert acc["status"] == "ok" and acc["note"] == "created by Cygnus"
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_account_that_exists_with_another_password_is_not_created_again(wctx):
+    ctx = wctx(password="Someone-Elses-9!")       # an account exists, with a different password
+    seed(ctx, WD)
+    _fill(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "stuck" and "already exists" in row.reason and "Forgot your password" in row.reason
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_new_account_that_needs_email_verification_says_so(wctx):
+    ctx = wctx(params="&noaccount=1&verify=1")
+    seed(ctx, WD)
+    _fill(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "stuck" and "workday_verify_email" in row.reason and "verif" in row.reason
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_account_creation_can_be_switched_off(wctx):
+    ctx = wctx(params="&noaccount=1")
+    ctx.profile.workday.create_accounts = False
+    seed(ctx, WD)
+    _fill(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "stuck" and "workday_sign_in_failed" in row.reason and "workday open acme" in row.reason
+
+
+def test_workday_password_rules():
+    from autoapply.browser.workday import password_problems
+    assert password_problems("Correct-Horse-1!") == []
+    assert password_problems("short1!") == ["at least 8 characters"]
+    assert set(password_problems("password")) == {"a number", "a special character"}
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_workday_applications_run_one_at_a_time_after_single_page_forms(wctx, monkeypatch):
+    import autoapply.browser.workday as wd_mod
+    from .test_browser import GH, FORMS as GH_FORMS, simplify_mock as gh_mock
+    ctx = wctx()
+    ctx.profile.browser.parallel_tabs = 3
+    other = "workday:beta@beta.wd5.myworkdayjobs.com:External/Backend-Engineer_R200"
+    wd_url = ctx.form_url_for(WD)
+    ctx.form_url_for = lambda key: (GH_FORMS / "greenhouse.html").resolve().as_uri() if key == GH else wd_url
+    wd_simplify, gh_simplify = simplify_mock(), gh_mock()
+
+    async def mock(page):
+        await (gh_simplify if "greenhouse" in page.url else wd_simplify)(page)
+    ctx.simplify_mock = mock
+    order, running, most = [], [0], [0]
+    real_walk = wd_mod.walk
+
+    async def counting_walk(ctx_, page, key, *a, **kw):
+        running[0] += 1
+        most[0] = max(most[0], running[0])
+        try:
+            return await real_walk(ctx_, page, key, *a, **kw)
+        finally:
+            running[0] -= 1
+            order.append(key)
+    monkeypatch.setattr(wd_mod, "walk", counting_walk)
+    seed(ctx, WD)
+    seed(ctx, other, company="Beta")
+    from .test_browser import seed as gh_seed
+    gh_seed(ctx, GH, company="Gamma")
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD, other, GH], RunStats(), session=bs)
+    asyncio.run(go())
+    assert most[0] == 1                                    # never two Workday walks at once
+    assert ctx.ledger.get(GH).state in ("ready", "needs_input")
+    assert {ctx.ledger.get(k).state for k in (WD, other)} == {"needs_input"}

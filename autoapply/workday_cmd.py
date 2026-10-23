@@ -11,8 +11,8 @@ from .browser.workday import accounts, account_key
 from .config import save_secret
 
 WAITING = ("scored", "held", "enriched", "discovered", "needs_input", "ready", "stuck")
-STATUS = {"ok": "signed in fine", "no_account": "sign-in failed - create an account",
-          "verify_email": "verify your email address"}
+STATUS = {"ok": "signed in fine", "no_account": "sign-in failed - see `autoapply workday` notes",
+          "verify_email": "verify your email address", "created": "account created, sign-in pending"}
 
 
 def workday_command(ctx, action: str, company: str | None) -> int:
@@ -37,6 +37,11 @@ def _login(ctx) -> int:
         if not pw:
             print("No password given; nothing saved.")
             return 1
+        from .browser.workday import password_problems
+        weak = password_problems(pw)
+        if weak:
+            print(f"Workday passwords need {', '.join(weak)}. Try another.")
+            continue
         if getpass.getpass("Type it again: ") == pw:
             break
         print("The two did not match; try again.")
@@ -72,9 +77,13 @@ def _list(ctx) -> int:
         tenant = k.partition("@")[0]
         st = acc.get(k, {}).get("status")
         print(f"{tenant:<22} {sum(counts.values()):>7}  {STATUS.get(st, 'not tried yet')}")
-    print("\nCreate an account: `autoapply workday open <company>`, choose Create Account, and use\n"
-          "your Workday email and password. Then `autoapply requeue --lane stuck` retries the ones\n"
-          "that stopped at sign-in.")
+    if ctx.profile.workday.create_accounts:
+        print("\nWhere signing in fails, the next run creates the account with your Workday login and\n"
+              "signs in (workday.create_accounts). `autoapply requeue --lane stuck` retries the ones\n"
+              "that stopped at sign-in.")
+    else:
+        print("\nCreate an account: `autoapply workday open <company>` (Create Account is filled in for you).\n"
+              "Then `autoapply requeue --lane stuck` retries the ones that stopped at sign-in.")
     return 0
 
 
