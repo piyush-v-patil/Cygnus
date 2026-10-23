@@ -1,6 +1,6 @@
 """Windows Task Scheduler integration (§16).
 
-Registers `autoapply run` at schedule.times with "Wake the computer to run this
+Registers `autoapply run --limit <schedule.limit>` at schedule.times with "Wake the computer to run this
 task", run-only-when-logged-on (the browser window is visible) and a time
 limit. A missed run (PC off) is not caught up: the ledger carries everything
 to the next run.
@@ -19,8 +19,11 @@ def _ps_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def install_script(times: list[str], python: str, profile_dir: str | None, hours: int) -> str:
+def install_script(times: list[str], python: str, profile_dir: str | None, hours: int,
+                   limit: int | None = None) -> str:
     args = "-m autoapply run"
+    if limit:
+        args += f" --limit {int(limit)}"
     if profile_dir:
         args += f' --profile-dir "{profile_dir}"'
     triggers = ", ".join(f"(New-ScheduledTaskTrigger -Daily -At {_ps_quote(t)})" for t in times)
@@ -61,7 +64,7 @@ def schedule_command(action: str, ctx: Context, profile_dir: str | None) -> int:
         return 0
     if action == "install":
         script = install_script(sched.times, sys.executable, profile_dir or str(ctx.paths.root),
-                                sched.time_limit_hours)
+                                sched.time_limit_hours, sched.limit)
     elif action == "remove":
         script = remove_script()
     else:

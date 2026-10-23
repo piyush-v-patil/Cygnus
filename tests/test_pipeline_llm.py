@@ -366,3 +366,15 @@ def test_answers_use_short_ids_and_retry_open_ended(make_ctx):
     essay = out["id:question_32968103003"]
     assert essay["kind"] == "essay" and "Snowflake" in essay["answer"]
     assert out["name:cards[0e0cf60a-07b7][field0]"]["kind"] == "needs_user"
+
+
+def test_postings_already_scored_at_a_us_person_company_are_not_filled(make_ctx):
+    from autoapply.ledger import ENRICHED, SCORED
+    ctx = make_ctx()
+    led = ctx.ledger
+    for key, company in (("greenhouse:anduril:1", "Anduril Industries"), ("greenhouse:acme:2", "Acme")):
+        led.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key,
+                                    "company": company, "title": "SWE", "role": "software", "posted_at": "2026-10-20"})
+        led.set_state(key, ENRICHED)
+        led.set_state(key, SCORED)
+    assert fill_candidates(ctx, None) == ["greenhouse:acme:2"]

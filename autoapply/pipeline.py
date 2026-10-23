@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from . import ats, blockers
 from .ats.detect import parse_key
 from .context import Context
-from .filters import prefilter
+from .filters import prefilter, us_person_company
 from .h1b import H1BIndex
 from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, RECHECKABLE, SCORED,
                      SKIPPED, STUCK)
@@ -171,6 +171,8 @@ def not_targeted(ctx: Context, row) -> str | None:
         return "role"
     if row.get("ats") and row["ats"] not in f.ats_allowed:
         return "ats_not_allowed"
+    if us_person_company(row.get("company"), ctx.profile):
+        return "us_person_company"
     return None
 
 
@@ -334,7 +336,7 @@ RUN_LINES = [
     ("unsupported", "on a site the tool cannot apply on"),
     ("enriched", "looked at this run (description fetched; --limit caps this)"),
     ("closed", "closed postings"),
-    ("not_targeted", "not targeted by your current filters (tier, role or site)"),
+    ("not_targeted", "not targeted by your current filters (tier, role, site or a US-person-only employer)"),
     ("released", "earlier low-fit skips moved back to held"),
     ("scored", "scored by Claude"),
     ("held", "held: fit score below your cutoff"),

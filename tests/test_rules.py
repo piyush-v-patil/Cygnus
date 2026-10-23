@@ -97,6 +97,22 @@ def test_prefilter_sponsor_filter():
     assert run(p, prof, H1BIndex(H1B)) is None
 
 
+@pytest.mark.parametrize("company,skipped", [
+    ("Anduril Industries", True), ("SpaceX", True), ("CACI International Inc", True),
+    ("BAE Systems, Inc.", True), ("Pratt & Whitney", True), ("The Aerospace Corporation", True),
+    ("Boeing", False), ("Palantir", False), ("SpaceXAI", False), ("Acme", False),
+])
+def test_us_person_companies_skipped_before_anything_costs(company, skipped):
+    assert (run(P(company=company)) == ("skipped", "us_person_company")) is skipped
+
+
+def test_us_person_company_list_is_adjustable_and_off_for_citizens():
+    prof = base_profile(visa={"us_person_companies_add": ["Acme Defense"], "us_person_companies_remove": ["SpaceX"]})
+    assert run(P(company="Acme Defense, Inc."), prof) == ("skipped", "us_person_company")
+    assert run(P(company="SpaceX"), prof) is None
+    assert run(P(company="Anduril"), base_profile(visa={"skip_us_person_roles": False})) is None
+
+
 # --- blocker regexes -------------------------------------------------------
 @pytest.mark.parametrize("text,reason", [
     ("Applicants must be a U.S. citizen due to contract requirements.", "us_person_required"),

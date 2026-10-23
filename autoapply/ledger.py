@@ -42,9 +42,9 @@ APPLIED = {SUBMITTED, SUBMITTED_MANUAL}
 
 # Rule-stage outcomes cost nothing to recompute, so they are re-checked every
 # run: a profile edit (new tier, sponsor_filter: off) brings postings back.
-RECHECKABLE = {(FILTERED_OUT, None), (SKIPPED, "no_h1b_record")}
+RECHECKABLE = {(FILTERED_OUT, None), (SKIPPED, "no_h1b_record"), (SKIPPED, "us_person_company")}
 
-SKIP_REASONS = ("low_fit", "us_person_required", "no_sponsorship", "no_h1b_record",
+SKIP_REASONS = ("low_fit", "us_person_required", "us_person_company", "no_sponsorship", "no_h1b_record",
                 "yoe", "blocker_other")
 MAX_ERROR_RETRIES = 3
 

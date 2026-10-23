@@ -103,11 +103,19 @@ Three things are not written back:
 - The submitted count after each review session.
 - One alert when a health check fails.
 
+### Simplify, one form at a time
+
+Several forms are filled in parallel (`browser.parallel_tabs`), but Simplify works on one at a time. Simplify pauses while its tab is hidden, so each form comes to the front of the tool's browser for its turn. Cygnus waits for Simplify's own "finished" status. If Simplify doesn't report one, it falls back to watching the Autofill button and the form.
+
+### US-person-only employers
+
+With `visa.skip_us_person_roles: true`, postings at employers where nearly every role needs US citizenship, US-person status or a clearance are skipped before anything is fetched or scored. That covers defense, space and national labs, for example Anduril, SpaceX, Lockheed Martin, RTX and Booz Allen. The list is in `autoapply/us_person.py`. Add employers with `visa.us_person_companies_add` and exempt them with `visa.us_person_companies_remove`. A change takes effect on the next run, including for postings already skipped this way. These skips are not written back to job-monitor.
+
 ### Scheduling
 
 With `schedule.mode: daily` or `twice_daily`, `autoapply schedule install` registers a Task Scheduler task called **Cygnus AutoApply**:
 
-- It runs `autoapply run` at your local `schedule.times`.
+- It runs `autoapply run --limit <schedule.limit>` at your local `schedule.times`. `schedule.limit` defaults to 50 jobs per run; `null` removes the limit. After changing it, run `autoapply schedule install` again.
 - **Wake the computer to run this task** is on.
 - It runs only while you are logged on, because the browser window is visible.
 - It has a 2-hour limit.

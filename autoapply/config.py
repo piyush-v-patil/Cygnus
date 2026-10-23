@@ -105,6 +105,9 @@ class VisaCfg(_Strict):
     needs_sponsorship_future: bool
     sponsor_filter: Literal["skip_no_record", "known_filers_only", "off"] = "skip_no_record"
     skip_us_person_roles: bool = True
+    # employers skipped up front when skip_us_person_roles is on (built-in list in us_person.py)
+    us_person_companies_add: list[str] = []
+    us_person_companies_remove: list[str] = []
     confirmed: bool = False
 
 
@@ -166,6 +169,7 @@ class ScheduleCfg(_Strict):
     mode: Literal["manual", "daily", "twice_daily"] = "manual"
     times: list[str] = ["08:00"]
     time_limit_hours: int = 2
+    limit: int | None = Field(50, ge=1)    # --limit for each scheduled run; null = no limit
 
     @model_validator(mode="after")
     def _check(self):

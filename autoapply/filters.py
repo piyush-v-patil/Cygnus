@@ -11,6 +11,7 @@ from .ats.detect import AtsRef
 from .config import Profile
 from .h1b import H1BIndex
 from .sources.base import Posting
+from .us_person import is_us_person_company
 
 # ---- US location (from job-monitor monitor/filters.py) ----------------------
 US_STATES = (
@@ -99,6 +100,13 @@ def location_ok(location: str, mode: str, metros: list[str]) -> bool:
     return True
 
 
+def us_person_company(company: str | None, profile: Profile) -> bool:
+    """A listed employer whose roles all need US citizenship / clearance (us_person.py)."""
+    v = profile.visa
+    return v.skip_us_person_roles and is_us_person_company(
+        company or "", v.us_person_companies_add, v.us_person_companies_remove)
+
+
 # ---- the prefilter ---------------------------------------------------------
 def prefilter(p: Posting, ref: AtsRef, profile: Profile, h1b: H1BIndex | None) -> tuple[str, str] | None:
     """Return (state, reason) to stop the posting here, or None to let it through.
@@ -122,6 +130,8 @@ def prefilter(p: Posting, ref: AtsRef, profile: Profile, h1b: H1BIndex | None) -
         return ("filtered_out", "role")
     if not location_ok(p.location, f.location, f.metros):
         return ("filtered_out", "location")
+    if us_person_company(p.company, profile):
+        return ("skipped", "us_person_company")
     if h1b is not None and not h1b.qualifies(p.company, profile.visa.sponsor_filter):
         return ("skipped", "no_h1b_record")
     return None

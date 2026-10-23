@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -172,15 +173,37 @@ async def open_form(page, url: str, hints: dict, timeout_s: float) -> None:
         raise Stuck(blocker, "the page asks for a CAPTCHA or a login before the form")
 
 
+_simplify_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def simplify_turn() -> asyncio.Lock:
+    """One form at a time gets Simplify. Simplify pauses its filling while its tab is
+    hidden (VERIFIED in the 3.1.10 content script), and only the front tab of the
+    window is visible, so each form takes its turn in front."""
+    loop = asyncio.get_running_loop()
+    lock = _simplify_locks.get(loop)
+    if lock is None:
+        lock = _simplify_locks[loop] = asyncio.Lock()
+    return lock
+
+
 async def run_simplify(ctx, page, hints: dict) -> None:
-    mock = getattr(ctx, "simplify_mock", None)
-    if mock is not None:
-        await mock(page)
-        return
-    try:
-        await autofill(page, hints, timeout_s=ctx.profile.browser.autofill_timeout_s)
-    except SimplifyError as e:
-        raise Stuck(e.kind, str(e)) from e
+    turn = simplify_turn()
+    if turn.locked():
+        log.info("    waiting for Simplify (one form at a time)")
+    async with turn:
+        try:
+            await page.bring_to_front()
+        except Exception:  # noqa: BLE001 - a tab that cannot come forward still gets its try
+            log.debug("could not bring the tab to the front")
+        mock = getattr(ctx, "simplify_mock", None)
+        if mock is not None:
+            await mock(page)
+            return
+        try:
+            await autofill(page, hints, timeout_s=ctx.profile.browser.autofill_timeout_s)
+        except SimplifyError as e:
+            raise Stuck(e.kind, str(e)) from e
 
 
 async def attach_resume(page, fields: list[Field], resume: Path, hints: dict) -> Field | None:

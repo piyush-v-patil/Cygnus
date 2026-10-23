@@ -132,6 +132,26 @@ def test_wrong_simplify_visa_answer_is_corrected_and_the_run_goes_on(bctx):
     assert "Your visa answers" in html and "visa answer was corrected" in html
 
 
+def test_simplify_gets_one_form_at_a_time(bctx):
+    bctx.profile.browser.parallel_tabs = 3
+    inner = simplify_mock()
+    running, most = [0], [0]
+
+    async def mock(page):                     # Simplify pauses in hidden tabs: never two at once
+        running[0] += 1
+        most[0] = max(most[0], running[0])
+        await asyncio.sleep(0.4)
+        await inner(page)
+        running[0] -= 1
+    bctx.simplify_mock = mock
+    seed(bctx, GH)
+    seed(bctx, ASHBY, company="Gamma", role="ml-ai")
+    seed(bctx, LEVER, company="Beta", role="software")
+    asyncio.run(fill_many(bctx, [GH, ASHBY, LEVER], RunStats()))
+    assert most[0] == 1
+    assert all(bctx.ledger.get(k).state in ("ready", "needs_input") for k in (GH, ASHBY, LEVER))
+
+
 def test_ashby_buttons_radio_and_eeo(bctx):
     seed(bctx, ASHBY, company="Gamma", role="ml-ai")
     asyncio.run(fill_many(bctx, [ASHBY], RunStats()))
