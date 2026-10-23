@@ -82,6 +82,23 @@ async def apply_consent(context, choice: str, timeout_s: float = 10) -> bool:
     return False
 
 
+SIGNUP_KEY = "simplifySignupCredentials"   # {email, password, updatedAt}: what Simplify's
+                                           # "Create Account & Autofill" made up and used (3.1.10)
+
+
+async def signup_credentials(context) -> dict | None:
+    """The email + password Simplify generated when it created job-site accounts, if any."""
+    workers = [w for w in context.service_workers if w.url.startswith("chrome-extension://")]
+    if not workers:
+        return None
+    try:
+        cur = await workers[0].evaluate(f"chrome.storage.local.get('{SIGNUP_KEY}')")
+    except Exception:  # noqa: BLE001 - the worker can be restarting
+        return None
+    v = (cur or {}).get(SIGNUP_KEY) or {}
+    return v if v.get("email") and v.get("password") else None
+
+
 class SimplifyError(Exception):
     """Autofill could not run. `kind` is a short code for the Stuck reason."""
 

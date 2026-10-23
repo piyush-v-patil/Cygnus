@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from .. import ats
 from ..ats import form_hints, parse_key
@@ -18,6 +20,23 @@ log = logging.getLogger(__name__)
 RECHECK_AFTER = timedelta(hours=24)
 GENERIC_SUBMIT = ("button[type=submit]:visible, input[type=submit]:visible, "
                   "button:has-text('Submit application'):visible, button:has-text('Submit Application'):visible")
+
+
+# what each board shows once an application went through (Simplify 3.1.10's
+# submittedSuccessPaths for these boards, as CSS / text)
+SUCCESS_CSS = {"greenhouse": ".confirmation__content, div.confirmation",
+               "ashby": "[class*='application-form-success-container']",
+               "lever": "[data-qa='msg-submit-success']"}
+SUCCESS_URL = re.compile(r"/(confirmation|thanks|thank-you|success)(/|\?|#|$)", re.I)
+SUCCESS_TEXT = re.compile(r"thank you for (applying|your application|submitting)|application (has been |was )?"
+                          r"(submitted|received|sent)|we('ve| have) received your application|we got your application",
+                          re.I)
+# Greenhouse: when its bot check is unsure it emails an 8-character security code and shows
+# one box per character; the application is only sent once the code is entered and Submit
+# is clicked again (VERIFIED 2026-10-23 in the live job-boards client)
+CODE_BOX = "[id^='security-input-']"
+CODE_TEXT = ".email-verification legend, #email-verification-label"
+CODE_ERROR = "#email-verification-error"
 
 
 class SubmitBlocked(Exception):
@@ -59,6 +78,73 @@ async def _form_problems_after_submit(page, hints: dict) -> str | None:
                 if t:
                     return f"form error: {t[:200]}"
     return None
+
+
+async def _headings(page) -> str:
+    try:
+        return await page.evaluate("""() => [...document.querySelectorAll(
+            'h1, h2, h3, [role=alert], [role=status], [class*=confirmation], [class*=success]')]
+            .filter(e => e.offsetParent !== null).map(e => e.innerText).join('\\n')""") or ""
+    except Exception:  # noqa: BLE001 - navigating
+        return ""
+
+
+async def _code_prompt(page) -> str | None:
+    """Greenhouse's "enter the code we emailed" step: its wording, or None."""
+    boxes = page.locator(CODE_BOX)
+    try:
+        if not await boxes.count() or not await boxes.first.is_visible():
+            return None
+        t = page.locator(CODE_TEXT)
+        return " ".join((await t.first.inner_text()).split()) if await t.count() else "a security code was emailed to you"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+SUBMIT_WAIT_S = 30.0
+
+
+async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: float | None = None) -> tuple[str, str]:
+    """What a Submit click led to: ("confirmed" | "code" | "error" | "unconfirmed", detail)."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (SUBMIT_WAIT_S if timeout_s is None else timeout_s)
+    css = SUCCESS_CSS.get(ats_name)
+    while loop.time() < deadline:
+        await asyncio.sleep(1.0)
+        if page.is_closed():
+            return "unconfirmed", "the tab closed"
+        code = await _code_prompt(page)
+        if code:
+            return "code", code
+        if css and await page.locator(css).count():
+            return "confirmed", "confirmation shown"
+        if SUCCESS_URL.search(page.url or ""):
+            return "confirmed", page.url
+        now = await _headings(page)
+        if SUCCESS_TEXT.search(now) and not SUCCESS_TEXT.search(before):
+            return "confirmed", SUCCESS_TEXT.search(now).group(0)
+        problem = await _form_problems_after_submit(page, hints)
+        if problem:
+            return "error", problem
+    # no message either way: fields the browser itself refuses to send mean it never left
+    try:
+        invalid = await page.evaluate("""() => [...document.querySelectorAll('input, textarea, select')]
+            .filter(e => !e.checkValidity()).map(e => {
+              const box = e.closest('.field, .field-wrapper, .application-question, fieldset, li') || e.parentElement;
+              const lab = box && box.querySelector('label, legend');
+              return (lab && lab.innerText.trim()) || e.name || e.id || 'a field';
+            })""")
+    except Exception:  # noqa: BLE001
+        invalid = []
+    if invalid:
+        return "error", "the form was not sent; not filled in: " + "; ".join(dict.fromkeys(invalid))[:300]
+    # if the form is gone, it was sent
+    try:
+        still_there = await page.locator(hints.get("submit") or GENERIC_SUBMIT).count()
+    except Exception:  # noqa: BLE001
+        still_there = 1
+    return ("confirmed", "the form went away") if not still_there else ("unconfirmed", "")
 
 
 async def live_tab_problems(page, app: dict, hints: dict) -> list[str]:
@@ -193,28 +279,46 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         _keep_or_close(ctx, posting_key, page)
         return {"state": WOULD_SUBMIT, "detail": f"test mode: saved to {sub}"}
 
+    if not hints.get("workday"):
+        write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
+                     led.score(posting_key), {"mode": "Submit clicked - waiting for the board's confirmation"})
+        led.upsert_application(posting_key, submission_dir=str(sub))
+    before = await _headings(page)
     try:
         await click_submit(ctx, page, hints)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=20000)
-        except Exception:  # noqa: BLE001
-            pass
-        await page.wait_for_timeout(2000)
         if hints.get("workday"):
+            try:
+                await page.wait_for_load_state("networkidle", timeout=20000)
+            except Exception:  # noqa: BLE001
+                pass
             from .workday import banner_errors, wait_submitted
             if not await wait_submitted(page):
                 why = await banner_errors(page)
                 raise Stuck("submit_failed", f"Workday did not confirm the submission{': ' + why if why else ''}")
         else:
-            problem = await _form_problems_after_submit(page, hints)
-            if problem:
-                raise Stuck("submit_failed", problem)
+            outcome, info = await after_click(page, ref.ats, hints, before)
+            if outcome == "code":
+                return await _needs_code(ctx, posting_key, page, sub, info)
+            if outcome == "error":
+                raise Stuck("submit_failed", info)
+            if outcome == "unconfirmed":
+                raise Stuck("submit_unconfirmed", "Submit was clicked but no confirmation appeared. Check the "
+                                                  "open tab: if it went through, click I submitted it")
     except Stuck as e:
         await safe_screenshot(page, sub / "after_submit.png")
         _stuck(ctx, posting_key, e, page)
         return {"state": STUCK, "detail": str(e)}
+    return await _record_submitted(ctx, posting_key, page, sub, sent)
 
-    # the application is sent: nothing from here on may fail before it is recorded
+
+async def _record_submitted(ctx, posting_key: str, page, sub, sent: list[dict]) -> dict:
+    """The application is sent: nothing from here on may fail before it is recorded."""
+    led = ctx.ledger
+    app = led.application(posting_key) or {}
+    posting = dict(led.get(posting_key).data)
+    resume = ctx.resumes.path(app["resume_file"]) if app.get("resume_file") else None
+    generated = [e["value"] for e in app.get("fill_plan") or [] if e.get("source") == "cover_letter"]
+    det = led.details(posting_key) or {}
     await safe_screenshot(page, sub / "after_submit.png")
     write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
                  led.score(posting_key), {"final_url": page.url})
@@ -223,8 +327,59 @@ async def submit(ctx, bs, posting_key: str) -> dict:
     led.set_state(posting_key, SUBMITTED)
     if ctx.writeback is not None:
         ctx.writeback.queue(posting_key, applied_change())
+    ctx.take_tab(posting_key)
     await page.close()
     return {"state": SUBMITTED, "detail": str(sub)}
+
+
+async def _needs_code(ctx, posting_key: str, page, sub, info: str) -> dict:
+    """The board emailed a code: keep the tab exactly as it is and ask for the code."""
+    await safe_screenshot(page, sub / "code_requested.png")
+    reason = f"email_code: {info}. Type the code from that email on this card"
+    _stuck(ctx, posting_key, Stuck("email_code", reason), page)
+    row = ctx.ledger.get(posting_key)
+    ctx.notifier.warn(f"{row.get('company')} - {row.get('title')}: the application needs the security code "
+                      "that was just emailed to you. Enter it on the Stuck card in the review page.")
+    return {"state": STUCK, "detail": "the board emailed you a security code - enter it on the Stuck card"}
+
+
+async def enter_code(ctx, posting_key: str, code: str) -> dict:
+    """Type the emailed security code into the kept tab, click Submit again, and record it
+    once the board confirms."""
+    led = ctx.ledger
+    if not ctx.has_live_tab(posting_key):
+        return {"state": STUCK, "detail": "the tab with this form is gone. Click Open form, submit it there "
+                                          "with a new code, then click I submitted it"}
+    page = ctx.open_tabs[posting_key]
+    hints = form_hints(parse_key(posting_key).ats)
+    code = re.sub(r"\s+", "", code or "")
+    boxes = page.locator(CODE_BOX)
+    n = await boxes.count()
+    if not n:
+        return {"state": STUCK, "detail": "the form is not asking for a code (any more). Check the tab"}
+    if len(code) != n:
+        return {"state": STUCK, "detail": f"the code has {n} characters; you typed {len(code)}"}
+    for i, ch in enumerate(code):
+        box = page.locator(f"#security-input-{i}")
+        await box.fill("")
+        await box.type(ch, delay=30)
+    before = await _headings(page)
+    await click_submit(ctx, page, hints)
+    outcome, info = await after_click(page, parse_key(posting_key).ats, hints, before)
+    if outcome == "code":
+        err = page.locator(CODE_ERROR)
+        why = " ".join((await err.first.inner_text()).split()) if await err.count() else "the code was not accepted"
+        return {"state": STUCK, "detail": f"{why}. Check the email and try again"}
+    if outcome == "confirmed":
+        app = led.application(posting_key) or {}
+        sub = Path(app["submission_dir"]) if app.get("submission_dir") else submission_dir(
+            ctx.paths.submissions, dict(led.get(posting_key).data))
+        sent_file = sub / "fields.json"
+        sent = json.loads(sent_file.read_text(encoding="utf-8")) if sent_file.exists() else []
+        return await _record_submitted(ctx, posting_key, page, sub, sent)
+    detail = info or "no confirmation appeared; check the tab, and click I submitted it if it went through"
+    led.upsert_application(posting_key, stuck_reason=f"submit_unconfirmed: {detail}")
+    return {"state": STUCK, "detail": detail}
 
 
 async def mark_manual(ctx, bs, posting_key: str) -> dict:

@@ -300,6 +300,20 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         return _back(lane if lane in LANES else STUCK, await _show(_key(app_id)), app_id)
 
+    @app.post("/app/{app_id}/code")
+    async def code(app_id: int, csrf: str = Form(""), code: str = Form("")):
+        """The security code a board emailed after Submit: type it in the kept tab and submit."""
+        check_csrf(csrf)
+        key = _key(app_id)
+        from ..browser.submit import enter_code
+        async with sess.lock:
+            res = await enter_code(ctx, key, code)
+        if res["state"] == SUBMITTED:
+            sess.submitted += 1
+        p = ctx.ledger.get(key)
+        lane = STUCK if res["state"] == STUCK else READY
+        return _back(lane, f"{p.get('company')} - {p.get('title')}: {res['state']} ({res['detail']})", app_id)
+
     @app.post("/app/{app_id}/manual")
     async def manual(app_id: int, csrf: str = Form("")):
         check_csrf(csrf)

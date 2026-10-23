@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Job Application for Backend Engineer at Acme</title></head>
+<body>
+<!-- Greenhouse's submit step, built like the live job-boards client: when its bot check is
+     unsure it emails an 8-character code and shows one box per character (security-input-N);
+     the application is sent once the code is entered and Submit is clicked again.
+     ?mode=code (default) | ok (confirms at once) | silent (nothing happens) -->
+<div id="app">
+<form id="application-form" onsubmit="return false">
+  <div class="field"><label for="first_name">First Name<span>*</span></label>
+    <input id="first_name" name="first_name" aria-required="true" value="Jane"></div>
+  <div class="field"><label for="email">Email<span>*</span></label>
+    <input id="email" name="email" aria-required="true" value="jane@example.com"></div>
+  <div id="verification"></div>
+  <button type="submit" id="submit">Submit application</button>
+</form>
+</div>
+<script>
+const MODE = new URLSearchParams(location.search).get("mode") || "code";
+const CODE = "ABCD1234";
+let asked = false;
+function confirmPage() {
+  try { history.pushState({}, "", location.pathname.replace(/[^/]*$/, "") + "confirmation"); } catch (e) {}
+  document.getElementById("app").innerHTML =
+    '<div class="confirmation"><div class="confirmation__content"><h1>Thank you for applying.</h1></div></div>';
+}
+// "ok" sends through the form's submit event, which the browser holds back while a
+// required field is empty
+document.getElementById("application-form").addEventListener("submit", () => {
+  if (MODE === "ok") setTimeout(confirmPage, 300);
+});
+document.getElementById("submit").addEventListener("click", () => {
+  if (MODE === "silent" || MODE === "ok") return;
+  if (!asked) {
+    asked = true;
+    let boxes = "";
+    for (let i = 0; i < 8; i++) boxes += `<input id="security-input-${i}" type="text" maxlength="1" aria-required="true">`;
+    document.getElementById("verification").innerHTML =
+      `<fieldset class="email-verification"><legend>Enter the 8-character code sent to jane@example.com</legend>
+       <label id="email-verification-label" for="security-input-0">Security code</label>
+       <div class="email-verification__wrapper">${boxes}</div><p id="email-verification-error"></p></fieldset>`;
+    return;
+  }
+  let typed = "";
+  for (let i = 0; i < 8; i++) typed += document.getElementById(`security-input-${i}`).value;
+  if (typed === CODE) { setTimeout(confirmPage, 300); return; }
+  document.getElementById("email-verification-error").textContent = "Incorrect security code";
+});
+</script>
+</body></html>

@@ -82,10 +82,13 @@ def accounts(ctx) -> dict:
     return dict(ctx.state_get(ACCOUNTS_KEY) or {})
 
 
-def set_account(ctx, posting_key: str, status: str, note: str = "") -> None:
+def set_account(ctx, posting_key: str, status: str, note: str = "", password: str | None = None) -> None:
+    """Record how signing in went; `password` says which one worked ("yours" | "simplify")."""
     acc = accounts(ctx)
     acc[account_key(posting_key)] = {"status": status, "note": note[:200],
                                      "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if password:
+        acc[account_key(posting_key)]["password"] = password
     ctx.state_set(ACCOUNTS_KEY, acc)
 
 
@@ -160,24 +163,31 @@ async def step_name(page) -> str:
 
 
 # ----------------------------------------------------------------- sign in --
-async def sign_in(ctx, page, posting_key: str) -> None:
-    email, password = ctx.secrets.get("WORKDAY_EMAIL"), ctx.secrets.get("WORKDAY_PASSWORD")
-    company = company_of(posting_key)
-    if not email or not password:
-        raise _stuck("workday_no_login", "add the email and password you use for Workday accounts: "
-                                         "run `autoapply workday login`")
-    if await _visible(page, VERIFY_PASSWORD) and await _visible(page, SIGN_IN_LINK):
-        await page.locator(SIGN_IN_LINK).first.click()            # on Create Account: switch to Sign In
-        await page.wait_for_timeout(1500)
-    if await _visible(page, EMAIL_SIGN_IN):
-        await page.locator(EMAIL_SIGN_IN).first.click()
-    try:
-        await page.locator(EMAIL).first.wait_for(state="visible", timeout=15000)
-    except Exception:  # noqa: BLE001
-        raise _stuck("workday_sign_in_failed", f"no email sign-in on {company}'s Workday page") from None
-    # typing before the form is wired up is silently dropped and the click then sends
-    # nothing (VERIFIED on a live tenant); settle first, and type + click again if nothing happens
-    await page.wait_for_timeout(2500)
+NOT_ACCEPTED = ("{company} did not accept your Workday sign-in ({text}). Usually one of these: "
+                "1) no account there yet: `autoapply workday open {company}` and choose Create Account; "
+                "2) the account was made with Simplify's Create Account button, which picks its own password: "
+                "use Forgot your password on the sign-in page and set it to your Workday password; "
+                "3) the email address is not verified yet: click the link in Workday's email. "
+                "Then run `autoapply requeue --lane stuck`.")
+
+
+async def _passwords(ctx, page, posting_key: str, email: str, mine: str) -> list[tuple[str, str]]:
+    """(source, password) to try: yours, and Simplify's generated one for the same email
+    (accounts made with its Create Account button use that). The one that worked last time first."""
+    out = [("yours", mine)]
+    from .simplify import signup_credentials
+    simp = await signup_credentials(page.context)
+    if simp and simp["email"].strip().lower() == email.strip().lower() and simp["password"] != mine:
+        out.append(("simplify", simp["password"]))
+    if accounts(ctx).get(account_key(posting_key), {}).get("password") == "simplify":
+        out.reverse()
+    return out
+
+
+async def _attempt(page, email: str, password: str) -> str | None:
+    """One sign-in. None when signed in; Workday's error text when refused. Typing before
+    the form is wired up is silently dropped and the click then sends nothing (VERIFIED on
+    a live tenant): settle first, and type + click again when nothing happens."""
     loop = asyncio.get_running_loop()
     for attempt in range(3):
         await page.locator(EMAIL).first.fill(email)
@@ -188,22 +198,50 @@ async def sign_in(ctx, page, posting_key: str) -> None:
         while loop.time() < deadline:
             await asyncio.sleep(0.75)
             if await _visible(page, ERROR):
-                text = " ".join((await page.locator(ERROR).first.inner_text()).split())
-                if re.search(r"verif", text, re.I):
-                    set_account(ctx, posting_key, "verify_email", text)
-                    raise _stuck("workday_verify_email", f"{company}: verify your email first ({text})")
-                set_account(ctx, posting_key, "no_account", text)
-                raise _stuck("workday_sign_in_failed",
-                             f"{company} did not accept your Workday sign-in ({text}). If you have no account "
-                             "there yet, click Open form, choose Create Account and use your Workday email and "
-                             "password; then run `autoapply requeue --lane stuck`")
+                return " ".join((await page.locator(ERROR).first.inner_text()).split())
             if not await _visible(page, SIGN_IN):
-                set_account(ctx, posting_key, "ok")
-                log.info("    signed in to %s's Workday", company)
-                return
+                return None
         log.info("    the Workday sign-in did not respond; trying again (%d of 3)", attempt + 2)
         await page.wait_for_timeout(1500)
-    raise _stuck("workday_sign_in_failed", f"signing in to {company}'s Workday did not finish")
+    raise _stuck("workday_sign_in_failed", "signing in to Workday did not finish")
+
+
+async def _email_form(page, company: str) -> None:
+    if await _visible(page, VERIFY_PASSWORD) and await _visible(page, SIGN_IN_LINK):
+        await page.locator(SIGN_IN_LINK).first.click()            # on Create Account: switch to Sign In
+        await page.wait_for_timeout(1500)
+    if await _visible(page, EMAIL_SIGN_IN):
+        await page.locator(EMAIL_SIGN_IN).first.click()
+    try:
+        await page.locator(EMAIL).first.wait_for(state="visible", timeout=15000)
+    except Exception:  # noqa: BLE001
+        raise _stuck("workday_sign_in_failed", f"no email sign-in on {company}'s Workday page") from None
+    await page.wait_for_timeout(2500)
+
+
+async def sign_in(ctx, page, posting_key: str) -> None:
+    email, password = ctx.secrets.get("WORKDAY_EMAIL"), ctx.secrets.get("WORKDAY_PASSWORD")
+    company = company_of(posting_key)
+    if not email or not password:
+        raise _stuck("workday_no_login", "add the email and password you use for Workday accounts: "
+                                         "run `autoapply workday login`")
+    text = ""
+    for i, (source, pw) in enumerate(await _passwords(ctx, page, posting_key, email, password)):
+        if i:                    # a fresh form: the last attempt's error must not answer for this one
+            await page.reload(wait_until="domcontentloaded")
+            await wait_state(page, ctx.profile.browser.page_timeout_s)
+        await _email_form(page, company)
+        text = await _attempt(page, email, pw)
+        if text is None:
+            set_account(ctx, posting_key, "ok", password=source)
+            log.info("    signed in to %s's Workday%s", company,
+                     " with the password Simplify made when it created the account" if source == "simplify" else "")
+            return
+        if re.search(r"verif", text, re.I):
+            set_account(ctx, posting_key, "verify_email", text)
+            raise _stuck("workday_verify_email", f"{company}: verify your email first ({text})")
+    set_account(ctx, posting_key, "no_account", text)
+    raise _stuck("workday_sign_in_failed", NOT_ACCEPTED.format(company=company, text=text))
 
 
 # ---------------------------------------------------------------- Simplify --

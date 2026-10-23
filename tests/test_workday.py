@@ -256,3 +256,30 @@ def test_workday_widgets_take_saved_answers(wctx):
     assert ctx.ledger.get(WD).state == "ready", ctx.ledger.application(WD)["missing"]
     assert "formField-skills: Python" in review and "formField-availableFrom: 06/2027" in review
     assert "formField-gender: Decline to self-identify" in review and "formField-relocate: No" in review
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_account_made_with_simplifys_button_signs_in_with_its_password(wctx, monkeypatch):
+    import autoapply.browser.simplify as simplify_mod
+    from autoapply.browser.workday import accounts
+
+    async def simplify_saved(context):        # what Simplify's Create Account button stored
+        return {"email": "Jane@Example.com", "password": "Simplify-Made-7!"}
+    monkeypatch.setattr(simplify_mod, "signup_credentials", simplify_saved)
+    ctx = wctx(password="Simplify-Made-7!")   # the site only takes Simplify's password
+    seed(ctx, WD)
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD], RunStats(), session=bs)
+    asyncio.run(go())
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason   # signed in, walked on
+    acc = accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]
+    assert acc["status"] == "ok" and acc["password"] == "simplify"
+
+
+def test_sign_in_failure_explains_the_usual_causes():
+    from autoapply.browser.workday import NOT_ACCEPTED
+    msg = NOT_ACCEPTED.format(company="capitalone", text="wrong email or password")
+    assert "Forgot your password" in msg and "verified" in msg and "workday open capitalone" in msg

@@ -10,6 +10,16 @@
   {% if c.plan|selectattr('note')|list %}<div class="stuck" style="color:var(--warn)">⚠ Simplify's visa answer was corrected from your profile — see the marked field below.</div>{% endif %}
   {% if c.score and c.score.reasons %}<div class="reasons">{{ c.score.reasons|join(' · ') }}</div>{% endif %}
   {% if a.stuck_reason %}<div class="stuck">Stuck: {{a.stuck_reason}}</div>{% endif %}
+  {% if lane == 'stuck' and (a.stuck_reason or '').startswith('email_code') %}
+    {% if c.live %}
+    <form method="post" action="/app/{{a.id}}/code" class="q">
+      <input type="hidden" name="csrf" value="{{csrf}}">
+      <label>Security code from the email</label>
+      <input type="text" name="code" autocomplete="one-time-code" maxlength="20" style="max-width:220px">
+      <div class="actions"><button class="primary">Enter code &amp; submit</button></div>
+    </form>
+    {% else %}<div class="why">The tab with this form is gone. Click Open form, submit it there (a new code will be emailed), then click I submitted it.</div>{% endif %}
+  {% endif %}
   {% if lane == 'needs_input' and c.missing %}
   <form method="post" action="/app/{{a.id}}/answers">
     <input type="hidden" name="csrf" value="{{csrf}}">

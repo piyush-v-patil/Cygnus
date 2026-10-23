@@ -82,6 +82,15 @@ document.querySelectorAll('.select__container').forEach(function (box) {
   input.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
   input.addEventListener('blur', function () { setTimeout(close, 150); });
 });
+// like the live form, the hidden "requiredInput" mirror follows the chosen value, however it
+// was chosen (a click, or Simplify writing the single-value)
+new MutationObserver(function () {
+  document.querySelectorAll('.select__container').forEach(function (box) {
+    var sv = box.querySelector('.select__single-value');
+    var mirror = box.querySelector('.remix-requiredInput');
+    if (mirror) mirror.value = sv ? sv.textContent : '';
+  });
+}).observe(document.body, {childList: true, subtree: true, characterData: true});
 document.getElementById('resume').addEventListener('change', function (e) {
   document.getElementById('resume-chip').textContent = e.target.files[0] ? e.target.files[0].name : '';
 });
