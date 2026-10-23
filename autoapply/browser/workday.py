@@ -46,6 +46,12 @@ CREATE_SUBMIT = '[data-automation-id="createAccountSubmitButton"]'
 ERROR = '[data-automation-id="errorMessage"]'
 JOB_APPLY = 'a[data-automation-id="adventureButton"]'
 APPLY_MANUALLY = '[data-automation-id="applyManually"]'
+# the other choices Apply can offer (Simplify 3.1.10's Workday ids); the tool only takes Apply Manually
+APPLY_CHOICES = ('[data-automation-id="applyManually"], [data-automation-id="autofillWithResume"], '
+                 '[data-automation-id="useMyLastApplication"]')
+ALREADY_APPLIED = re.compile(r"already applied|you have applied|application (is )?in progress", re.I)
+POSTING_GONE = re.compile(r"(doesn.t|does not) exist|no longer (available|accepting|posted)|position has been filled"
+                          r"|job (is )?(closed|not found)|page not found", re.I)
 NEXT = ('button[data-automation-id="bottom-navigation-next-button"], '
         'button[data-automation-id="pageFooterNextButton"]')
 REVIEW = '[data-automation-id="applyFlowReviewPage"], [data-automation-id="reviewJobApplicationPage"]'
@@ -69,14 +75,11 @@ async def in_front(page):
     """One Workday application at a time, in front from sign-in to Review. Simplify fills each
     new page by itself and pauses whenever its tab is hidden ("Please stay on this Workday
     page"), so no other form may take the front between pages."""
-    from .fill import simplify_turn
+    from .fill import my_turn
     if _holding_front.get():
         yield
         return
-    turn = simplify_turn()
-    if turn.locked():
-        log.info("    waiting for the browser's front (another form is using Simplify)")
-    async with turn:
+    async with my_turn("    waiting for the browser's front (another form is using Simplify)"):
         token = _holding_front.set(True)
         try:
             try:
@@ -86,6 +89,15 @@ async def in_front(page):
             yield
         finally:
             _holding_front.reset(token)
+
+
+class ReviewFirst(Exception):
+    """Approval had to walk the application to Review (tab lost, or it stopped earlier): the
+    user looks at the result first, and the next Approve submits it."""
+
+    def __init__(self, page):
+        super().__init__("walked to the Review page; check it, then approve again")
+        self.page = page
 
 
 class NeedsInputError(Exception):
@@ -154,12 +166,18 @@ async def _visible(page, selector: str) -> bool:
 
 
 async def submitted(page) -> bool:
+    """Workday's "application received" view. A page that still has questions or a Next /
+    Submit button is not one, whatever its text says ("Thank you for applying to Acme..."
+    in an intro paragraph)."""
+    if await _visible(page, FIELD_BLOCK) or await _visible(page, NEXT) or await _visible(page, REVIEW):
+        return False
     if await _visible(page, SUCCESS):
         return True
     try:
         heads = await safe_evaluate(page, """() => [...document.querySelectorAll(
             'h1, h2, h3, [role=alert], [role=dialog], [data-automation-id=richText]')]
-            .filter(e => e.offsetParent !== null).map(e => e.innerText).join('\\n')""")
+            .filter(e => e.offsetParent !== null && !e.closest('[data-automation-id^="formField-"]'))
+            .map(e => e.innerText).join('\\n')""")
     except Exception:  # noqa: BLE001
         return False
     return bool(SUCCESS_TEXT.search(heads or ""))
@@ -191,12 +209,44 @@ async def wait_state(page, timeout_s: float) -> str:
     return "gone"
 
 
-async def step_name(page) -> str:
+async def _step_text(page) -> str:
     try:
-        t = await page.locator(ACTIVE_STEP).first.inner_text(timeout=2000)
+        return " ".join((await page.locator(ACTIVE_STEP).first.inner_text(timeout=2000)).split())
     except Exception:  # noqa: BLE001
         return ""
-    return re.sub(r"^\s*current step \d+ of \d+\s*", "", " ".join(t.split()), flags=re.I)
+
+
+async def step_name(page) -> str:
+    return re.sub(r"^\s*current step \d+ of \d+\s*", "", await _step_text(page), flags=re.I)
+
+
+async def page_mark(page) -> tuple[str, str]:
+    """What tells one page from the next: the active step as written, with its number
+    ("current step 4 of 7 Application Questions": two steps may share a name), and the
+    question blocks on screen."""
+    try:
+        blocks = await safe_evaluate(page, """() => [...document.querySelectorAll('[data-automation-id^="formField-"]')]
+            .filter(e => e.offsetParent !== null).map(e => e.getAttribute('data-automation-id')).join('|')""")
+    except Exception:  # noqa: BLE001
+        blocks = ""
+    return await _step_text(page), blocks or ""
+
+
+async def headline(page) -> str:
+    """The visible headings, for naming a page the tool does not know."""
+    try:
+        return (await safe_evaluate(page, """() => [...document.querySelectorAll('h1, h2, h3, [role=heading]')]
+            .filter(e => e.offsetParent !== null && e.innerText.trim()).slice(0, 3)
+            .map(e => e.innerText.trim()).join(' / ')""") or "")[:160]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def body_text(page) -> str:
+    try:
+        return (await safe_evaluate(page, "() => document.body ? document.body.innerText : ''") or "")[:5000]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # ----------------------------------------------------------------- sign in --
@@ -257,12 +307,17 @@ async def _email_form(page, company: str) -> None:
 
 
 def password_problems(pw: str) -> list[str]:
-    """Workday's password rules, as its Create Account form lists them (live tenant, 2026-10-23)."""
+    """Workday's password rules, as its Create Account form lists them (live tenant, 2026-10-23:
+    an alphabetic, an uppercase, a lowercase, a numeric and a special character, 8 or more)."""
     out = []
     if len(pw) < 8:
         out.append("at least 8 characters")
     if not re.search(r"[A-Za-z]", pw):
         out.append("a letter")
+    if not re.search(r"[A-Z]", pw):
+        out.append("an uppercase letter")
+    if not re.search(r"[a-z]", pw):
+        out.append("a lowercase letter")
     if not re.search(r"\d", pw):
         out.append("a number")
     if not re.search(r"[^A-Za-z0-9]", pw):
@@ -296,6 +351,11 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
     except Exception:  # noqa: BLE001
         raise _stuck("workday_sign_in_failed", f"no Create Account form on {company}'s Workday page") from None
     await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
+    from .fill import CAPTCHA_CHALLENGE
+    if await _visible(page, CAPTCHA_CHALLENGE):
+        set_account(ctx, posting_key, "no_account", "Create Account asks for a CAPTCHA")
+        raise _stuck("captcha", f"{company}'s Create Account form asks for a CAPTCHA: create the account by hand "
+                     f"(`autoapply workday open {company}`), then `autoapply requeue --lane stuck`")
     loop = asyncio.get_running_loop()
     text = None
     for attempt in range(3):
@@ -304,6 +364,8 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
         await page.locator(VERIFY_PASSWORD).first.fill(password)
         agree = page.locator(CREATE_AGREE)
         if await agree.count() and not await agree.first.is_checked():
+            # creating the account needs it; workday.create_accounts is your yes to this
+            log.info("    ticking %s's account agreement box (workday.create_accounts is on)", company)
             await agree.first.click(force=True)
         await _click_create(page)
         deadline = loop.time() + 20
@@ -325,11 +387,15 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
             set_account(ctx, posting_key, "verify_email", text)
             raise _stuck("workday_verify_email", f"{company}: account created - verify your email first ({text})")
         set_account(ctx, posting_key, "no_account", text)
+        if re.search(r"password", text, re.I) and not re.search(r"exist", text, re.I):
+            raise _stuck("workday_sign_in_failed", f"{company} did not accept your Workday password for a new "
+                         f"account ({text}). Pick one that meets its rules with `autoapply workday login`, "
+                         "then `autoapply requeue --lane stuck`")
         raise _stuck("workday_sign_in_failed",
                      f"{company} did not create the account ({text}). If it says the account exists, its "
                      "password is not your Workday password: use Forgot your password on the sign-in page "
                      "and set it to yours, then `autoapply requeue --lane stuck`")
-    set_account(ctx, posting_key, "created")
+    set_account(ctx, posting_key, "created", "created by Cygnus (agreement box ticked)")
     if not await _visible(page, SIGN_IN):
         set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
         log.info("    created the account at %s and Workday signed you in", company)
@@ -360,6 +426,12 @@ async def sign_in(ctx, page, posting_key: str) -> None:
     if not email or not password:
         raise _stuck("workday_no_login", "add the email and password you use for Workday accounts: "
                                          "run `autoapply workday login`")
+    if account_blocked(ctx, posting_key):
+        # it failed already (maybe minutes ago for another posting there): trying again and
+        # again is how Workday accounts get locked
+        note = accounts(ctx).get(account_key(posting_key), {}).get("note") or "sign-in failed"
+        raise _stuck("workday_sign_in_failed", f"{company}: signing in failed earlier ({note}); not trying again "
+                     "until you fix it and run `autoapply requeue --lane stuck`")
     text = ""
     for i, (source, pw) in enumerate(await _passwords(ctx, page, posting_key, email, password)):
         if i:                    # a fresh form: the last attempt's error must not answer for this one
@@ -417,7 +489,10 @@ async def page_errors(page) -> dict[str, str]:
       const out = {};
       for (const b of document.querySelectorAll('[data-automation-id^="formField-"][data-aa-key]')) {
         const bad = b.querySelector('[aria-invalid="true"]');
-        const msg = b.querySelector('[data-automation-id="errorMessage"], [role="alert"]');
+        // inputError is the field-error element Simplify 3.1.10's Workday config names;
+        // errorMessage is what the sign-in page uses
+        const msg = [...b.querySelectorAll('[data-automation-id="inputError"], [data-automation-id="errorMessage"], '
+                                           + '[id$="-error"], [role="alert"]')].find(e => e.innerText.trim());
         if (bad || (msg && msg.innerText.trim())) out[b.getAttribute('data-aa-key')] =
           (msg && msg.innerText.trim()) || 'Workday marked this field as invalid';
       }
@@ -427,16 +502,22 @@ async def page_errors(page) -> dict[str, str]:
 
 async def banner_errors(page) -> str:
     try:
-        return await safe_evaluate(page, """() => [...document.querySelectorAll(
-          '[data-automation-id="errorBanner"], [data-automation-id="errorMessage"]')]
-          .filter(e => e.offsetParent !== null && !e.closest('[data-automation-id^="formField-"]'))
-          .map(e => e.innerText.trim()).filter(Boolean).join(' | ')""") or ""
+        # any visible error element outside the question blocks ("Errors Found" lists and the like)
+        return await safe_evaluate(page, """() => [...new Set([...document.querySelectorAll(
+          '[data-automation-id*="rror"]')]
+          .filter(e => e.offsetParent !== null && !e.closest('[data-automation-id^="formField-"]')
+                       && !e.closest('[data-automation-id="signInContent"]')
+                       && !e.querySelector('[data-automation-id*="rror"]'))
+          .map(e => e.innerText.trim()).filter(Boolean))].join(' | ')""") or ""
     except Exception:  # noqa: BLE001
         return ""
 
 
-async def advance(page, before: str, timeout_s: float = 25) -> str:
-    """Click Save and Continue: 'next' | 'review' | 'errors' | 'same'."""
+async def advance(page, before: tuple[str, str], timeout_s: float = 25) -> str:
+    """Click Save and Continue: 'next' | 'review' | 'errors' | 'same'. `before` is the
+    page_mark of the page being left."""
+    if not await _visible(page, NEXT):
+        raise _stuck("workday_stuck_on_page", "this page has no Save and Continue button")
     btn = page.locator(NEXT).first
     label = " ".join((await btn.inner_text()).split())
     if re.search(r"submit", label, re.I):
@@ -450,8 +531,9 @@ async def advance(page, before: str, timeout_s: float = 25) -> str:
             return "review"
         if await page_errors(page) or await banner_errors(page):
             return "errors"
-        now = await step_name(page)
-        if now and now != before and (await _visible(page, FIELD_BLOCK) or await _visible(page, NEXT)):
+        step, blocks = await page_mark(page)
+        moved = (step and step != before[0]) or (blocks and blocks != before[1])
+        if moved and (await _visible(page, FIELD_BLOCK) or await _visible(page, NEXT)):
             return "next"
     return "same"
 
@@ -482,7 +564,7 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
                track: dict | None = None) -> bool:
     """Walk the wizard from the current page. True on Review; False when a page has
     questions for the user (they are in `missing`). Plan entries are PlanEntry objects."""
-    from .fill import PlanEntry, correct_legal_answers, fill_blanks, final_check, _missing
+    from .fill import PlanEntry, correct_legal_answers, fill_blanks, final_check, legal_note, _missing
     hints = form_hints("workday")
     track = track if track is not None else {}
     timeout = ctx.profile.browser.page_timeout_s
@@ -492,11 +574,25 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
         log.info("    %s", name)
 
     pages = 0
+    apply_clicks = 0
     while pages < MAX_PAGES:
         st = await wait_state(page, timeout)
         if st == "gone":
-            raise _stuck("posting_gone", "the Workday application did not load (the posting may be closed)")
+            text = await body_text(page)
+            if POSTING_GONE.search(text):
+                raise _stuck("posting_gone", "Workday says the posting is no longer there")
+            title = await headline(page) or "no heading"
+            raise _stuck("workday_unknown_page", f"Workday showed a page the tool does not know (\u201c{title}\u201d, "
+                         f"{page.url[:150]}). Finish it by hand in the tab, or check that the posting is still open")
         if st == "job":
+            if ALREADY_APPLIED.search(await body_text(page)):
+                raise _stuck("already_submitted", "the job page says you already applied")
+            apply_clicks += 1
+            if apply_clicks > 2:
+                offered = [" ".join(t.split()) for t in await page.locator(APPLY_CHOICES).all_inner_texts()]
+                raise _stuck("workday_no_apply_manually",
+                             "the job page's Apply button did not lead to Apply Manually (offered: "
+                             f"{', '.join(o for o in offered if o) or 'nothing'}); start the application by hand")
             await page.locator(JOB_APPLY).first.click()
             try:
                 await page.locator(APPLY_MANUALLY).first.click(timeout=8000)
@@ -529,7 +625,8 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
         for f in fields:
             if f.filled_by_simplify and f.kind != "file" and f.key not in planned:
                 src = "simplify" if not (before.get(f.key) or "").strip() else "workday"
-                plan.append(PlanEntry(f.key, f.label, f.kind, f.value, src, f.required, f.options))
+                plan.append(PlanEntry(f.key, f.label, f.kind, f.value, src, f.required, f.options,
+                                      note=legal_note(f, ctx.profile)))
         skip: set[str] = set()
         rf = next((f for f in fields if f.is_resume), None)
         if rf is not None and resume_path is not None:
@@ -549,19 +646,22 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
             log.info("    %s: %d question(s) need your answer", name, len(missing) - already)
             return False
         step(f"{name}: Save and Continue")
-        res = await advance(page, name)
+        # taken after filling: Simplify may add blocks (a second Work Experience) to this page
+        res = await advance(page, await page_mark(page))
         if res == "review":
             return True
         if res == "errors":
             errs = await page_errors(page)
             by_key = {f.key: f for f in await enumerate_fields(page, hints)}
+            before_n = len(missing)
             for k, text in errs.items():
                 if k in by_key and k not in {m["key"] for m in missing}:
                     missing.append(_missing(by_key[k], f"Workday says: {text}"[:200]))
-            banner = await banner_errors(page)
-            if not errs and banner:
-                raise _stuck("workday_page_error", f"{name}: {banner[:300]}")
-            return False
+            if len(missing) > before_n:
+                return False
+            # nothing it named is a question the tool can put to you: say what Workday said
+            said = await banner_errors(page) or "; ".join(dict.fromkeys(errs.values()))
+            raise _stuck("workday_page_error", f"{name}: {(said or 'Workday did not accept the page')[:300]}")
         if res == "same":
             raise _stuck("workday_stuck_on_page", f"{name}: Save and Continue did not move on")
         pages += 1
@@ -577,9 +677,18 @@ async def fill_application(ctx, page, posting_key, resume_name, resume_path, res
     generated: list[str] = []
     async with in_front(page):
         await open_workday(ctx, page, posting_key)
-        await walk(ctx, page, posting_key, plan, missing, generated, resume_name=resume_name,
-                   resume_path=resume_path, resume_text=resume_text, posting=posting, desc=desc,
-                   check_consistency=check_consistency, track=track)
+        on_review = await walk(ctx, page, posting_key, plan, missing, generated, resume_name=resume_name,
+                               resume_path=resume_path, resume_text=resume_text, posting=posting, desc=desc,
+                               check_consistency=check_consistency, track=track)
+    if not on_review and not missing:            # never "Ready" with the tab still mid-wizard
+        err = _stuck("workday_stuck_on_page", "the walk stopped before Review without a question for you")
+        err.page = page
+        raise err
+    if on_review and not any(p.source == "resume" for p in plan):
+        # never claim a resume that was not attached: Workday showed no upload the tool could find
+        log.warning("    no resume upload found on %s's Workday pages; %s was not attached", company_of(posting_key),
+                    resume_name)
+        resume_name = None
     shot = await safe_screenshot(page, ctx.paths.screenshots / f"{slug(posting_key, 80)}.png")
     corrected = [p.label for p in plan if getattr(p, "note", None)]
     return FillOutcome(lane=NEEDS_INPUT if missing else READY, plan=[p.to_dict() for p in plan],
@@ -604,7 +713,11 @@ async def resume(ctx, page, posting_key: str) -> bool:
                                resume_name=res, resume_path=ctx.resumes.path(res) if res else None,
                                resume_text=ctx.resumes.text(res) if res else "", posting=dict(row.data),
                                desc=det.get("description_text") or "", skip_simplify_first=True)
-    led.upsert_application(posting_key, fill_plan=merge_plan(old, [p.to_dict() for p in plan]), missing=missing)
+    merged = merge_plan(old, [p.to_dict() for p in plan])
+    led.upsert_application(posting_key, fill_plan=merged, missing=missing)
+    if on_review and res and not any(e.get("source") == "resume" for e in merged):
+        log.warning("    no resume upload found on %s's Workday pages; %s was not attached", company_of(posting_key), res)
+        led.upsert_application(posting_key, resume_file=None)
     lane = READY if on_review and not missing else NEEDS_INPUT
     if led.get(posting_key).state != lane:
         led.set_state(posting_key, lane, None, "Workday walk went on")
@@ -629,8 +742,10 @@ async def replay(ctx, bs, app: dict):
                                    resume_text=ctx.resumes.text(res) if res else "",
                                    posting=dict(ctx.ledger.get(key).data),
                                    desc=(ctx.ledger.details(key) or {}).get("description_text") or "")
+        merged = merge_plan(old, [p.to_dict() for p in plan])
         if missing or not on_review:
-            raise NeedsInputError(missing, merge_plan(old, [p.to_dict() for p in plan]))
+            raise NeedsInputError(missing, merged)
+        ctx.ledger.upsert_application(key, fill_plan=merged)       # what is on Review now
         return page
     except BaseException as e:
         e.page = page

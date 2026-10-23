@@ -13,6 +13,10 @@ from .config import ConfigError, Paths, load_secrets, redact
 log = logging.getLogger("autoapply")
 
 
+class LockHeld(SystemExit):
+    """Another run (or a review session) holds the profile."""
+
+
 class RunLock:
     """Only one run at a time (§16): an exclusive lock file in the profile folder."""
 
@@ -29,8 +33,8 @@ class RunLock:
             if pid.isdigit() and not _pid_alive(int(pid)):
                 self.path.unlink(missing_ok=True)     # stale lock from a crashed run
                 return self.__enter__()
-            raise SystemExit(f"Another autoapply run is in progress (pid {pid}). "
-                             f"If it is not, delete {self.path}.")
+            raise LockHeld(f"Another autoapply run is in progress (pid {pid}). "
+                           f"If it is not, delete {self.path}.")
         os.write(self.fd, str(os.getpid()).encode())
         return self
 
@@ -38,6 +42,19 @@ class RunLock:
         if self.fd is not None:
             os.close(self.fd)
             self.path.unlink(missing_ok=True)
+
+
+class _Held:
+    """`with` for a RunLock that is already taken: releases it on the way out."""
+
+    def __init__(self, lock: RunLock):
+        self.lock = lock
+
+    def __enter__(self):
+        return self.lock
+
+    def __exit__(self, *exc):
+        self.lock.__exit__(*exc)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -63,9 +80,17 @@ class _Redact(logging.Filter):
         self.secrets = secrets
 
     def filter(self, record):
-        record.msg = redact(str(record.msg), self.secrets)
-        if record.args:
-            record.args = tuple(redact(str(a), self.secrets) for a in record.args)
+        # format first: redacting the arguments one by one turned %d arguments into
+        # strings and broke the line
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - a bad format string still gets logged
+            msg = f"{record.msg} {record.args}"
+        record.msg, record.args = redact(msg, self.secrets), None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = redact(record.exc_text, self.secrets)
         return True
 
 
@@ -140,6 +165,38 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
+    except Exception as e:  # noqa: BLE001 - logged, kept in a crash file, and alerted
+        return _crashed(paths, args.cmd, e)
+
+
+def _crashed(paths: Paths, cmd: str, e: Exception) -> int:
+    import traceback
+    tb = "".join(traceback.format_exception(e))
+    try:
+        secrets = load_secrets(paths)
+    except Exception:  # noqa: BLE001
+        secrets = {}
+    log.error("autoapply %s crashed: %s: %s", cmd, type(e).__name__, e, exc_info=e)
+    crash = None
+    try:
+        paths.logs.mkdir(parents=True, exist_ok=True)
+        crash = paths.logs / f"{datetime.now():%Y%m%d-%H%M%S}-crash.log"
+        crash.write_text(redact(tb, secrets), encoding="utf-8")
+    except OSError:
+        pass
+    print(f"autoapply {cmd} stopped on an unexpected error: {type(e).__name__}: {redact(str(e), secrets)}"
+          + (f"\nDetails: {crash}" if crash else ""), file=sys.stderr)
+    _alert(paths, f"`autoapply {cmd}` crashed: {type(e).__name__}: {redact(str(e), secrets)[:300]}")
+    return 1
+
+
+def _alert(paths: Paths, message: str) -> None:
+    """Best effort: a Discord alert when the profile can still be read."""
+    try:
+        from .context import Context
+        Context(paths).notifier.alert(message)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _dispatch(args, paths: Paths) -> int:
@@ -221,12 +278,21 @@ def _dispatch(args, paths: Paths) -> int:
     if args.cmd == "run":
         from .health import run_health
         from .pipeline import run
-        with RunLock(paths.lock):
+        lock = RunLock(paths.lock)
+        try:
+            lock.__enter__()
+        except LockHeld as e:
+            if not sys.stdin or not sys.stdin.isatty():    # a scheduled run: nobody sees the console
+                ctx.notifier.warn(f"a scheduled run was skipped: {e} (a review session left open?)")
+            raise
+        with _Held(lock):
             rep = run_health(ctx, probe_browser=not args.no_fill)
             if not rep.ok:
                 print(rep.render(), file=sys.stderr)
                 ctx.notifier.alert(rep.first_failure())
                 return 1
+            for w in rep.warnings:
+                print(f"Note: {w}", file=sys.stderr)
             if args.review and not args.no_fill:
                 from .review.server import run_and_review
                 return run_and_review(ctx, limit=args.limit, port=args.port or ctx.profile.review.port,
@@ -247,6 +313,8 @@ def _dispatch(args, paths: Paths) -> int:
                 print(rep.render(), file=sys.stderr)
                 ctx.notifier.alert(rep.first_failure())
                 return 1
+            for w in rep.warnings:
+                print(f"Note: {w}", file=sys.stderr)
             return serve(ctx, port=args.port or ctx.profile.review.port, open_browser=not args.no_browser)
     return 1
 

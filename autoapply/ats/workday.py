@@ -34,8 +34,18 @@ class WorkdayClient(AtsClient):
                               headers={"User-Agent": "autoapply", "Accept": "application/json"})
         except Exception as e:  # noqa: BLE001 - requests errors
             raise FetchError(str(e)) from e
-        if r.status_code in (403, 404, 410):
+        if r.status_code in (404, 410):
             return JobDetails(closed=True)
+        if r.status_code == 403:
+            # S22 is Workday's "this posting is gone"; any other 403 (bot protection, rate
+            # limits) is a failed fetch to retry, never a permanent "closed"
+            try:
+                code = (r.json() or {}).get("errorCode")
+            except ValueError:
+                code = None
+            if code == "S22":
+                return JobDetails(closed=True)
+            raise FetchError(f"workday HTTP 403{f' ({code})' if code else ''}")
         if r.status_code != 200:
             raise FetchError(f"workday HTTP {r.status_code}")
         try:

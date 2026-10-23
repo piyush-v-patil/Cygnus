@@ -18,8 +18,17 @@ US_STATES = (
     "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS"
     "|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC"
 )
+# spelled out, as Workday and others write them ("Dublin, Ohio", "Santa Fe, New Mexico")
+US_STATE_NAMES = (
+    "alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia"
+    "|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts"
+    "|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey"
+    "|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania"
+    "|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia"
+    "|washington|west virginia|wisconsin|wyoming|district of columbia"
+)
 US_HINT = re.compile(
-    rf"united states|\busa?\b|,\s*({US_STATES})\b|\b({US_STATES})\s*,?\s*(us|usa)?$"
+    rf"\b({US_STATE_NAMES})\b|united states|\busa?\b|,\s*({US_STATES})\b|\b({US_STATES})\s*,?\s*(us|usa)?$"
     r"|new york|san francisco|seattle|austin|boston|chicago|los angeles|denver"
     r"|atlanta|dallas|houston|miami|phoenix|portland|philadelphia|washington"
     r"|bellevue|redmond|mountain view|sunnyvale|palo alto|menlo park|cupertino"

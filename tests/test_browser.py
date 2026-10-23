@@ -129,7 +129,7 @@ def test_wrong_simplify_visa_answer_is_corrected_and_the_run_goes_on(bctx):
     from autoapply.review.server import create_app
     with TestClient(create_app(bctx, port=8765), base_url="http://127.0.0.1:8765") as c:
         html = c.get("/lane/ready").text
-    assert "Your visa answers" in html and "visa answer was corrected" in html
+    assert "Your visa answers" in html and "sponsorship answer needs your eye" in html
 
 
 def test_simplify_gets_one_form_at_a_time(bctx):

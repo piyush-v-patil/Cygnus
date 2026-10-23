@@ -47,6 +47,7 @@ RECHECKABLE = {(FILTERED_OUT, None), (SKIPPED, "no_h1b_record"), (SKIPPED, "us_p
 SKIP_REASONS = ("low_fit", "us_person_required", "us_person_company", "no_sponsorship", "no_h1b_record",
                 "yoe", "blocker_other")
 MAX_ERROR_RETRIES = 3
+PROGRESS = {"enriched", "scored", "held", "ready", "needs_input"}
 
 TRANSITIONS: dict[str, set[str]] = {
     DISCOVERED: {FILTERED_OUT, UNSUPPORTED, ENRICHED, CLOSED, SKIPPED, ERROR},
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS runs (
   counts_json TEXT, error TEXT
 );
 CREATE TABLE IF NOT EXISTS events (ts TEXT, posting_key TEXT, event TEXT, detail TEXT);
+CREATE INDEX IF NOT EXISTS events_by_posting ON events (posting_key, event);
 CREATE TABLE IF NOT EXISTS writeback_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_name TEXT, source_ref TEXT, posting_key TEXT, change_json TEXT,
@@ -143,7 +145,14 @@ class Ledger:
         self._depth = 0
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._add_column("applications", "submit_clicked_at", "TEXT")
         self.db.execute("INSERT OR IGNORE INTO meta VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
+
+    def _add_column(self, table: str, column: str, decl: str) -> None:
+        """Bring an older ledger up to date (columns added after the first release)."""
+        have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self):
         self.db.close()
@@ -236,6 +245,8 @@ class Ledger:
         args: list[Any] = [new, reason, now_iso()]
         if new == ERROR:
             extra = ", error_count = error_count + 1"
+        elif new in PROGRESS:
+            extra = ", error_count = 0"           # it got further: earlier failures no longer count
         self.db.execute(f"UPDATE postings SET state=?, reason=?, updated_at=?{extra} WHERE posting_key=?",
                         (*args, key))
         self._event(key, f"state:{new}", reason if detail is None else f"{reason or ''} {detail}".strip())
@@ -365,6 +376,16 @@ class Ledger:
         with self.tx():
             for k in keys:
                 self.set_state(k, SCORED, None, "interrupted mid-fill; queued again")
+            # Submit clicked, then the run or PC stopped before the board confirmed: the
+            # application may have gone out. Shown in Stuck for the user to check, never resent.
+            for r in self.postings_in([READY, NEEDS_INPUT]):
+                at = self.submit_clicked(r.posting_key)
+                if at:
+                    why = (f"submit_interrupted: Submit was clicked at {at} but Cygnus stopped before the "
+                           "board confirmed it. Check your email or the site: if it went through, click "
+                           "I submitted it; if not, Submit it again")
+                    self.upsert_application(r.posting_key, lane=STUCK, stuck_reason=why)
+                    self.set_state(r.posting_key, STUCK, why[:300])
         return keys
 
     def requeue(self, lanes: Iterable[str]) -> list[str]:
@@ -379,13 +400,22 @@ class Ledger:
             return []
         return self.requeue_keys([r.posting_key for r in self.postings_in(lanes)])
 
+    def submit_clicked(self, key: str) -> str | None:
+        """When Submit was clicked for this application and not confirmed since (None: never)."""
+        r = self.db.execute("SELECT submit_clicked_at FROM applications WHERE posting_key=?", (key,)).fetchone()
+        return r[0] if r else None
+
     def requeue_keys(self, keys: Iterable[str], event: str = "requeued") -> list[str]:
-        """requeue() for chosen postings (only ones waiting in a lane or tested)."""
-        keys = [k for k in keys if (r := self.get(k)) is not None and r.state in (*LANES, WOULD_SUBMIT)]
+        """requeue() for chosen postings (only ones waiting in a lane or tested). Never one whose
+        Submit was already clicked: refilling it could send the application a second time."""
+        keys = [k for k in keys if (r := self.get(k)) is not None and r.state in (*LANES, WOULD_SUBMIT)
+                and (r.state == WOULD_SUBMIT or not self.submit_clicked(k))]
         with self.tx():
             for k in keys:
+                # never scored (it stopped while reading or scoring the job): start it over there
+                back = SCORED if self.score(k) is not None else DISCOVERED
                 self.db.execute("UPDATE postings SET state=?, reason=NULL, error_count=0, updated_at=? "
-                                "WHERE posting_key=?", (SCORED, now_iso(), k))
+                                "WHERE posting_key=?", (back, now_iso(), k))
                 self.db.execute("DELETE FROM applications WHERE posting_key=?", (k,))
                 self._event(k, event, None)
         return keys

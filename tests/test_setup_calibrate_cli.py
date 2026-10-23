@@ -33,6 +33,43 @@ def test_set_cutoff_keeps_comments():
     assert "cutoff: 72   # tuned" in out and "# my notes" in out
 
 
+
+def test_set_cutoff_adds_to_an_existing_fit_section():
+    import yaml
+    for text in ("fit:\n  order: newest_first\nllm:\n  x: 1\n",
+                 "fit:  # notes\n\n  # comment\n  order: newest_first\n",
+                 "fit:\n  order: newest_first\n\n  cutoff: 60\n",
+                 "fit: {order: newest_first, cutoff: 60}\n"):
+        out = set_cutoff_in_yaml(text, 72)
+        assert out.count("cutoff") == 1, out
+        assert yaml.safe_load(out)["fit"] == {"order": "newest_first", "cutoff": 72}
+
+
+def test_profile_with_a_repeated_key_is_named(profile_dir):
+    from autoapply.config import ConfigError
+    text = profile_dir.profile.read_text()
+    profile_dir.profile.write_text("\ufeff" + text + "\nllm:\n  monthly_budget_usd: 9\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="`llm` is written twice"):
+        load_profile(profile_dir)
+    profile_dir.profile.write_text("\ufeff" + text, encoding="utf-8")       # a byte-order mark is fine
+    load_profile(profile_dir)
+
+
+def test_hand_edited_answers_and_secrets(tmp_path):
+    from autoapply.config import AnswerBank, load_secrets
+    f = tmp_path / "answers.yaml"
+    f.write_text("- original: Are you over 18?\n  kind: yes_no\n  answer: yes\n"
+                 "- original: Years of Python\n  kind: number\n  answer: 3\n"
+                 "- original: Broken\n  kind: essay\n  answer: x\n", encoding="utf-8")
+    bank = AnswerBank(f)
+    assert bank.lookup("Are you over 18?", "yes_no") == "Yes" and bank.lookup("Years of Python", "number") == "3"
+    bank.add("New one", "short_text", "hi")
+    assert "Broken" in f.read_text()                            # the entry we could not use is kept
+    paths = Paths(tmp_path)
+    paths.secrets.write_text("\ufeffANTHROPIC_API_KEY=sk-1234567\n", encoding="utf-8")
+    assert load_secrets(paths)["ANTHROPIC_API_KEY"] == "sk-1234567"
+
+
 def test_calibration_run(make_ctx, transport, monkeypatch):
     import autoapply.ats as ats_pkg
     import autoapply.pipeline as pl
@@ -106,6 +143,41 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
     assert "workday" in prof.filters.ats_allowed
     secrets = paths.secrets.read_text()
     assert "WORKDAY_EMAIL=jane@example.com" in secrets and "WORKDAY_PASSWORD=Secret-Pass-1!" in secrets
+
+
+def test_wizard_rerun_reasks_bad_input_and_keeps_hand_edits(tmp_path, monkeypatch):
+    import yaml
+    pdf = tmp_path / "r.pdf"
+    _pdf(pdf, "Someone\nEngineer")
+    monkeypatch.setattr("autoapply.setup_wizard.find_installed_simplify", lambda ext_id: None)
+    paths = Paths(tmp_path / "p")
+    paths.ensure()
+    paths.profile.write_text("review:\n  port: 9999\n", encoding="utf-8")       # a hand edit
+    script = iter(["y", str(pdf), "", "", "r.pdf", "",
+                   "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
+                   "n", "n", "n", "n", "n",
+                   "seventy", "150", "70",                     # re-asked until valid
+                   "daily", "8:00, 25:00", "8:00"])
+    said = []
+    assert run_wizard(paths, IO(ask=lambda p: next(script), say=said.append)) == 0
+    prof = load_profile(paths)
+    assert prof.fit.cutoff == 70 and prof.schedule.times == ["08:00"] and prof.review.port == 9999
+    assert list(paths.root.glob("profile.yaml.*.bak"))
+    assert any("whole number" in s for s in said) and any("Not a time: 25:00" in s for s in said)
+    assert yaml.safe_load(paths.profile.read_text())["review"] == {"port": 9999}
+
+
+def test_wizard_secrets_are_typed_hidden(tmp_path, monkeypatch):
+    from autoapply import setup_wizard as sw
+    hidden = []
+    io = IO(ask=lambda p: "", say=lambda s: None)
+    monkeypatch.setattr(io, "secret", lambda p: hidden.append(p) or "")
+    paths = Paths(tmp_path / "p")
+    paths.ensure()
+    assert sw.ensure_anthropic_key(paths, io) is None
+    monkeypatch.setattr(io, "yes", lambda p, d=True: True)
+    assert sw.step_discord(paths, io) is False
+    assert len(hidden) == 2 and all("hidden" in p for p in hidden)
 
 
 def test_wizard_does_not_save_unconfirmed_visa(tmp_path, monkeypatch):
@@ -256,6 +328,7 @@ def test_requeue_sends_queued_back_to_scored(profile_dir, capsys):
     led = Ledger(profile_dir.ledger)
     for k, end in (("a", NEEDS_INPUT), ("b", SUBMITTED)):
         led.upsert_discovered(k, {"source_name": "s"})
+        led.save_score(k, {"score": 80, "role_family": "software", "reasons": [], "blockers": []}, "m", "v", "h")
         for st in (ENRICHED, SCORED, FILLING, NEEDS_INPUT):
             led.set_state(k, st)
         led.upsert_application(k, lane=NEEDS_INPUT, fill_plan=[{"key": "x"}])
@@ -273,6 +346,7 @@ def test_requeue_tested_releases_test_approvals(profile_dir, capsys):
     from autoapply.ledger import ENRICHED, FILLING, Ledger, READY, SCORED, WOULD_SUBMIT
     led = Ledger(profile_dir.ledger)
     led.upsert_discovered("t", {"source_name": "s"})
+    led.save_score("t", {"score": 80, "role_family": "software", "reasons": [], "blockers": []}, "m", "v", "h")
     for st in (ENRICHED, SCORED, FILLING, READY, WOULD_SUBMIT):
         led.set_state("t", st)
     led.upsert_application("t", lane=READY, submission_dir="x")
@@ -282,3 +356,55 @@ def test_requeue_tested_releases_test_approvals(profile_dir, capsys):
     assert main(["--profile-dir", str(profile_dir.root), "requeue", "--lane", "tested"]) == 0
     assert "1 application(s)" in capsys.readouterr().out.splitlines()[-1]
     assert Ledger(profile_dir.ledger).get("t").state == SCORED
+
+
+def test_log_filter_keeps_number_formats_and_hides_secrets(tmp_path):
+    import logging
+
+    from autoapply.cli import _Redact
+    rec = logging.LogRecord("x", logging.INFO, __file__, 1, "%d of %.1f used by %s", (3, 2.5, "key sk-ant-SECRET1"), None)
+    assert _Redact({"ANTHROPIC_API_KEY": "sk-ant-SECRET1"}).filter(rec)
+    assert rec.getMessage() == "3 of 2.5 used by key ***"
+
+
+def test_unexpected_error_is_kept_and_reported(profile_dir, monkeypatch, capsys):
+    import autoapply.cli as cli
+    alerts = []
+    monkeypatch.setattr(cli, "_dispatch", lambda args, paths: 1 / 0)
+    monkeypatch.setattr(cli, "_alert", lambda paths, msg: alerts.append(msg))
+    assert main(["--profile-dir", str(profile_dir.root), "status"]) == 1
+    err = capsys.readouterr().err
+    assert "ZeroDivisionError" in err and "Details:" in err
+    assert list(profile_dir.logs.glob("*-crash.log")) and "ZeroDivisionError" in alerts[0]
+
+
+def test_run_takes_and_releases_the_lock(profile_dir, monkeypatch):
+    import autoapply.health as health
+    import autoapply.pipeline as pipeline
+    from autoapply.health import Report
+    seen = []
+    monkeypatch.setattr(health, "run_health", lambda ctx, **kw: Report())
+    monkeypatch.setattr(pipeline, "run", lambda ctx, **kw: seen.append(profile_dir.lock.exists()) or {})
+    assert main(["--profile-dir", str(profile_dir.root), "run", "--no-fill"]) == 0
+    assert seen == [True] and not profile_dir.lock.exists()
+
+
+def test_scheduled_run_blocked_by_lock_is_reported(profile_dir, monkeypatch):
+    import autoapply.cli as cli
+    from autoapply.notify import Notifier
+    warned = []
+    monkeypatch.setattr(Notifier, "warn", lambda self, m: warned.append(m))
+    monkeypatch.setattr(cli.sys, "stdin", None)
+    with RunLock(profile_dir.lock):
+        with pytest.raises(SystemExit):
+            main(["--profile-dir", str(profile_dir.root), "run", "--no-fill"])
+    assert warned and "skipped" in warned[0]
+
+
+def test_damaged_resume_pdf_is_a_clear_problem(tmp_path):
+    from autoapply.config import ConfigError
+    from autoapply.resumes import extract_text
+    bad = tmp_path / "general.pdf"
+    bad.write_bytes(b"%PDF-1.4 not really")
+    with pytest.raises(ConfigError, match="could not be read"):
+        extract_text(bad)

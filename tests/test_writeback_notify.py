@@ -85,6 +85,26 @@ def test_failed_write_is_retried_next_time(tmp_path):
     assert wb.flush() == 1 and wb.gh.doc["jobs"]["a:1"]["status"] == "applied"
 
 
+
+def test_a_failed_flush_stops_flushing_on_every_skip(tmp_path, monkeypatch):
+    import autoapply.writeback as wbm
+    monkeypatch.setattr(wbm, "FLUSH_EVERY", 1)
+    led = Ledger(tmp_path / "l.sqlite")
+    calls = []
+
+    class Down(FakeGitHub):
+        def blob_sha(self, *a):
+            calls.append(1)
+            raise GitHubError("HTTP 403", 403)
+
+    wb = Writeback(led, "jm", "me/jm", "main", Down())
+    for i in range(20):
+        led.upsert_discovered(f"greenhouse:c:{i}", {"source_name": "jm", "source_ref": f"c:{i}"})
+        wb.queue(f"greenhouse:c:{i}", skip_change("low_fit"))
+    assert len(calls) == 1                                   # not one jobs.json download per skip
+    assert wb.flush() == 0 and len(calls) == 2              # the end of the run still tries
+
+
 class Resp:
     def __init__(self, status, body=None):
         self.status_code = status
@@ -127,6 +147,25 @@ def test_group_needs_input_keeps_companies_together():
     items = [{"company": c, "title": "t", "questions": []} for c in "BAAB"]
     groups = group_needs_input(items)
     assert [i["company"] for i in groups[0]] == ["A", "A", "B", "B"]
+
+
+def test_background_discord_never_blocks_the_caller():
+    import threading
+    import time
+    gate, sent = threading.Event(), []
+
+    def post(url, json):
+        gate.wait(5)                                       # a slow webhook
+        sent.append(json["content"])
+        return Resp(204)
+
+    d = Discord("u", post=post, sleep=lambda s: None, background=True)
+    t0 = time.monotonic()
+    assert d.send("one") and d.send("two")
+    assert time.monotonic() - t0 < 0.5 and not sent
+    assert d.drain(0.2) is False
+    gate.set()
+    assert d.drain(5) and sent == ["one", "two"]
 
 
 def test_disabled_discord_sends_nothing():

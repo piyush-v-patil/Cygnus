@@ -104,8 +104,13 @@ async def _code_prompt(page) -> str | None:
 SUBMIT_WAIT_S = 30.0
 
 
-async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: float | None = None) -> tuple[str, str]:
-    """What a Submit click led to: ("confirmed" | "code" | "error" | "unconfirmed", detail)."""
+async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: float | None = None,
+                      before_problem: str | None = None) -> tuple[str, str]:
+    """What a Submit click led to: ("confirmed" | "code" | "error" | "unconfirmed", detail).
+
+    Only the board's own confirmation counts as sent; a page that merely lost its form (a
+    network error, a reload) is "unconfirmed". An error already on the page before the
+    click (`before_problem`, e.g. a cookie banner) is not the click's error."""
     import asyncio
     loop = asyncio.get_running_loop()
     deadline = loop.time() + (SUBMIT_WAIT_S if timeout_s is None else timeout_s)
@@ -125,7 +130,7 @@ async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: 
         if SUCCESS_TEXT.search(now) and not SUCCESS_TEXT.search(before):
             return "confirmed", SUCCESS_TEXT.search(now).group(0)
         problem = await _form_problems_after_submit(page, hints)
-        if problem:
+        if problem and problem != before_problem:
             return "error", problem
     # no message either way: fields the browser itself refuses to send mean it never left
     try:
@@ -139,12 +144,7 @@ async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: 
         invalid = []
     if invalid:
         return "error", "the form was not sent; not filled in: " + "; ".join(dict.fromkeys(invalid))[:300]
-    # if the form is gone, it was sent
-    try:
-        still_there = await page.locator(hints.get("submit") or GENERIC_SUBMIT).count()
-    except Exception:  # noqa: BLE001
-        still_there = 1
-    return ("confirmed", "the form went away") if not still_there else ("unconfirmed", "")
+    return "unconfirmed", ""
 
 
 async def live_tab_problems(page, app: dict, hints: dict) -> list[str]:
@@ -175,7 +175,7 @@ async def get_ready_page(ctx, bs, app: dict):
     hints = form_hints(parse_key(key).ats)
     page, age = ctx.take_tab(key)
     if hints.get("workday"):
-        return await _workday_ready_page(ctx, bs, app, page)
+        return await _workday_ready_page(ctx, bs, app, page, age)
     if page is not None:
         max_age = ctx.profile.browser.tab_max_age_min * 60
         try:
@@ -193,33 +193,60 @@ async def get_ready_page(ctx, bs, app: dict):
     return await replay(ctx, bs, app)
 
 
-async def _workday_ready_page(ctx, bs, app: dict, page):
+async def _workday_ready_page(ctx, bs, app: dict, page, age: float | None = None):
     """A Workday tab on Review: the kept tab (walked on to Review if it stopped earlier), else
-    the application reopened from the account's draft and walked again."""
+    the application reopened from the account's draft and walked again. A tab older than
+    browser.tab_max_age_min is reopened too: Workday's sign-in may have run out."""
     from . import workday
     key = app["posting_key"]
+    if page is not None and not page.is_closed() and age is not None and age > ctx.profile.browser.tab_max_age_min * 60:
+        log.info("Workday tab for %s is %d min old; reopening it", key, age // 60)
+        await page.close()
     if page is not None and not page.is_closed():
         try:
             st = await workday.state(page)
             if st == "review":
-                return page
+                return page                       # the page the user could look at: submit it
             if st == "form" and await workday.resume(ctx, page, key):
-                return page
+                raise workday.ReviewFirst(page)
             if st == "form":
                 a = ctx.ledger.application(key) or {}
                 raise workday.NeedsInputError(a.get("missing") or [], a.get("fill_plan") or [])
-        except workday.NeedsInputError as e:
+        except (workday.NeedsInputError, workday.ReviewFirst) as e:
             e.page = page
             raise
         except Exception as e:  # noqa: BLE001 - a dead tab just means reopening
             log.info("kept Workday tab for %s not usable (%s); reopening", key, e)
         if not page.is_closed():
             await page.close()
-    return await replay(ctx, bs, app)
+    raise workday.ReviewFirst(await replay(ctx, bs, app))
 
 
-async def submit(ctx, bs, posting_key: str) -> dict:
-    """Approve & submit. Returns {"state": ..., "detail": ...}."""
+async def shows_confirmation(page, ats_name: str, hints: dict) -> bool:
+    """The tab is on the board's "application received" page (sent from it already)."""
+    if page is None or page.is_closed():
+        return False
+    try:
+        if hints.get("workday"):
+            from .workday import state
+            return await state(page) == "submitted"
+        css = SUCCESS_CSS.get(ats_name)
+        if css and await page.locator(css).count():
+            return True
+        if SUCCESS_URL.search(page.url or ""):
+            return True
+        if await page.locator(hints.get("submit") or GENERIC_SUBMIT).count():
+            return False
+        return bool(SUCCESS_TEXT.search(await _headings(page)))
+    except Exception:  # noqa: BLE001 - a navigating tab is not a confirmation
+        return False
+
+
+async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
+    """Approve & submit. Returns {"state": ..., "detail": ...}.
+
+    Submit is never clicked twice for an application on its own: once clicked, a resend
+    needs `force` (the user said it did not go out)."""
     led = ctx.ledger
     row = led.get(posting_key)
     app = led.application(posting_key)
@@ -228,10 +255,34 @@ async def submit(ctx, bs, posting_key: str) -> dict:
     if row.state == NEEDS_INPUT and not app.get("missing"):
         led.set_state(posting_key, READY, None, "all questions answered")
         row = led.get(posting_key)
+    if force and row.state == STUCK and led.submit_clicked(posting_key):
+        led.set_state(posting_key, READY, None, "you said it was not sent; submitting again")
+        row = led.get(posting_key)
     if row.state != READY:
         return {"state": row.state, "detail": f"cannot submit from {row.state}"}
     ref = parse_key(posting_key)
     hints = form_hints(ref.ats)
+
+    # sent from the kept tab already (by you, or by an earlier click): record it, never resend
+    tab = ctx.open_tabs.get(posting_key) if ctx.has_live_tab(posting_key) else None
+    if tab is not None and await shows_confirmation(tab, ref.ats, hints):
+        if led.submit_clicked(posting_key):
+            sub = Path(app["submission_dir"]) if app.get("submission_dir") else submission_dir(
+                ctx.paths.submissions, dict(row.data))
+            sent_file = sub / "fields.json"
+            sent = json.loads(sent_file.read_text(encoding="utf-8")) if sent_file.exists() else []
+            ctx.take_tab(posting_key)
+            return await _record_submitted(ctx, posting_key, tab, sub, sent)
+        await mark_manual(ctx, bs, posting_key)
+        return {"state": SUBMITTED_MANUAL, "detail": "the open tab already shows the confirmation, "
+                                                     "so it was recorded as sent by you"}
+    clicked = led.submit_clicked(posting_key)
+    if clicked and not force:
+        e = Stuck("submit_clicked_before", f"Submit was already clicked for this application at {clicked}. "
+                  "Check your email or the site: if it went through, click I submitted it; if not, "
+                  "click Submit it again")
+        _stuck(ctx, posting_key, e, tab)
+        return {"state": STUCK, "detail": str(e)}
 
     if _waited_too_long(app) and ref.supported and getattr(ctx, "form_url_for", None) is None:
         try:
@@ -242,9 +293,18 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         except ats.FetchError as e:
             log.warning("could not recheck %s: %s", posting_key, e)
 
-    from .workday import NeedsInputError
+    from .workday import NeedsInputError, ReviewFirst
     try:
         page = await get_ready_page(ctx, bs, app)
+    except ReviewFirst as e:
+        # never submit pages the user has not had a chance to see
+        ctx.remember_tab(posting_key, e.page)
+        try:
+            await e.page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"state": READY, "detail": "Workday's Review page is open in the tool's browser with your "
+                                          "answers. Check it, then click Approve & submit again"}
     except Stuck as e:
         _stuck(ctx, posting_key, e, getattr(e, "page", None))
         return {"state": STUCK, "detail": str(e)}
@@ -279,12 +339,15 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         _keep_or_close(ctx, posting_key, page)
         return {"state": WOULD_SUBMIT, "detail": f"test mode: saved to {sub}"}
 
-    if not hints.get("workday"):
-        write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
-                     led.score(posting_key), {"mode": "Submit clicked - waiting for the board's confirmation"})
-        led.upsert_application(posting_key, submission_dir=str(sub))
+    write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
+                 led.score(posting_key), {"mode": "Submit clicked - waiting for the board's confirmation"})
+    led.upsert_application(posting_key, submission_dir=str(sub))
     before = await _headings(page)
+    before_problem = None if hints.get("workday") else await _form_problems_after_submit(page, hints)
     try:
+        # recorded before the click: if anything stops between here and the confirmation,
+        # the application is never sent again without you saying so
+        led.upsert_application(posting_key, submit_clicked_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         await click_submit(ctx, page, hints)
         if hints.get("workday"):
             try:
@@ -294,9 +357,12 @@ async def submit(ctx, bs, posting_key: str) -> dict:
             from .workday import banner_errors, wait_submitted
             if not await wait_submitted(page):
                 why = await banner_errors(page)
-                raise Stuck("submit_failed", f"Workday did not confirm the submission{': ' + why if why else ''}")
+                if why:
+                    raise Stuck("submit_failed", f"Workday did not take the submission: {why}")
+                raise Stuck("submit_unconfirmed", "Submit was clicked but Workday showed no confirmation. Check "
+                                                  "the open tab: if it went through, click I submitted it")
         else:
-            outcome, info = await after_click(page, ref.ats, hints, before)
+            outcome, info = await after_click(page, ref.ats, hints, before, before_problem=before_problem)
             if outcome == "code":
                 return await _needs_code(ctx, posting_key, page, sub, info)
             if outcome == "error":
@@ -304,7 +370,11 @@ async def submit(ctx, bs, posting_key: str) -> dict:
             if outcome == "unconfirmed":
                 raise Stuck("submit_unconfirmed", "Submit was clicked but no confirmation appeared. Check the "
                                                   "open tab: if it went through, click I submitted it")
-    except Stuck as e:
+    except Exception as e:  # noqa: BLE001 - after the click nothing may pass for "not sent"
+        if not isinstance(e, Stuck):
+            log.error("submit %s: %s after clicking Submit", posting_key, type(e).__name__, exc_info=e)
+            e = Stuck("submit_unconfirmed", f"Submit was clicked, then the page failed ({type(e).__name__}). "
+                                            "Check the open tab: if it went through, click I submitted it")
         await safe_screenshot(page, sub / "after_submit.png")
         _stuck(ctx, posting_key, e, page)
         return {"state": STUCK, "detail": str(e)}
@@ -364,8 +434,9 @@ async def enter_code(ctx, posting_key: str, code: str) -> dict:
         await box.fill("")
         await box.type(ch, delay=30)
     before = await _headings(page)
+    before_problem = await _form_problems_after_submit(page, hints)
     await click_submit(ctx, page, hints)
-    outcome, info = await after_click(page, parse_key(posting_key).ats, hints, before)
+    outcome, info = await after_click(page, parse_key(posting_key).ats, hints, before, before_problem=before_problem)
     if outcome == "code":
         err = page.locator(CODE_ERROR)
         why = " ".join((await err.first.inner_text()).split()) if await err.count() else "the code was not accepted"

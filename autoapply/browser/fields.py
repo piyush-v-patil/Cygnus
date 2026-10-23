@@ -34,6 +34,7 @@ class Field:
     max_length: int | None = None
     accept: str = ""
     filled_by_simplify: bool = False
+    section: str = ""             # a repeatable entry ("Work Experience 2"): its answers are never banked
 
     @property
     def empty(self) -> bool:
@@ -125,7 +126,7 @@ async def enumerate_fields(page, hints: dict | None = None) -> list[Field]:
                          required=bool(r.get("required")), options=r.get("options") or [],
                          value=r.get("value") or "", visible=bool(r.get("visible", True)),
                          input_type=r.get("input_type") or "", max_length=r.get("max_length"),
-                         accept=r.get("accept") or ""))
+                         accept=r.get("accept") or "", section=r.get("section") or ""))
     return out
 
 
@@ -186,17 +187,15 @@ async def fill_field(page, f: Field, value: str | list[str], files_dir: Path | N
             await _fill_combobox(page, loc.first, str(value))
         elif f.kind == "radio":
             idx = _option_index(f, str(value))
-            await _check_option(page, page.locator(f'{sel}[data-aa-opt="{idx}"]').first)
+            await _set_checked(page, page.locator(f'{sel}[data-aa-opt="{idx}"]').first, True)
         elif f.kind == "checkbox_group":
             wanted = value if isinstance(value, list) else [v.strip() for v in str(value).split(";") if v.strip()]
-            for w in wanted:
-                idx = _option_index(f, w)
-                await _check_option(page, page.locator(f'{sel}[data-aa-opt="{idx}"]').first)
+            keep = {_option_index(f, w) for w in wanted}
+            for idx in range(len(f.options)):          # exactly these ticked: others are cleared
+                await _set_checked(page, page.locator(f'{sel}[data-aa-opt="{idx}"]').first, idx in keep)
         elif f.kind == "checkbox":
             want = normalize_question(str(value)) in ("yes", "true", "1", "checked", "agree", "i agree")
-            box = loc.first
-            if await box.is_checked() != want:
-                await _check_option(page, box)
+            await _set_checked(page, loc.first, want)
         elif f.kind == "buttons":
             await loc.first.locator("button", has_text=str(value)).first.click(timeout=8000)
         elif f.kind == "file":
@@ -218,13 +217,26 @@ def _option_index(f: Field, value: str) -> int:
     raise FillError(f"{f.label!r}: option {value!r} not offered ({f.options})")
 
 
-async def _check_option(page, loc):
-    """Radios/checkboxes are often visually hidden behind a styled label."""
-    try:
-        await loc.check(timeout=4000)
+async def _set_checked(page, loc, want: bool) -> None:
+    """Tick or untick a checkbox / radio, then make sure it stayed that way."""
+    if await loc.is_checked() == want:
         return
-    except Exception:  # noqa: BLE001
-        pass
+    try:
+        await (loc.check if want else loc.uncheck)(timeout=4000)
+    except Exception:  # noqa: BLE001 - styled inputs: click whatever shows instead
+        await _check_option(page, loc, attempt_native=False)
+    if await loc.is_checked() != want:
+        raise FillError(f"the box did not {'tick' if want else 'untick'}")
+
+
+async def _check_option(page, loc, attempt_native: bool = True):
+    """Radios/checkboxes are often visually hidden behind a styled label: one click on it."""
+    if attempt_native:
+        try:
+            await loc.check(timeout=4000)
+            return
+        except Exception:  # noqa: BLE001
+            pass
     lid = await loc.get_attribute("id")
     if lid:
         lab = page.locator(f'label[for="{lid}"]')

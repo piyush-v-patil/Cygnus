@@ -146,3 +146,67 @@ def test_no_blockers_in_plain_posting():
 
 def test_sponsorship_patterns_skipped_for_citizens():
     assert scan("We are unable to sponsor visas.", check_sponsorship=False) == []
+
+
+@pytest.mark.parametrize("q,citizen,opt", [
+    ("Are you legally authorized to work in the United States without the need for employer sponsorship?",
+     ("yes", True), ("no", False)),               # OPT: unclear (yes today, no later) - flagged, not changed
+    ("Will you be able to work in the US now and in the future without visa sponsorship?", ("yes", True), ("no", True)),
+    ("Will you now or in the future require sponsorship for employment visa status?", ("no", True), ("yes", True)),
+    ("Do you currently require visa sponsorship?", ("no", True), ("no", True)),
+    ("Do you require visa sponsorship?", ("no", True), ("yes", False)),
+    ("Are you legally authorized to work in the United States?", ("yes", True), ("yes", True)),
+    ("What is your favourite language?", (None, False), (None, False)),
+])
+def test_sponsorship_questions_read_for_time_frame_and_negation(q, citizen, opt):
+    from autoapply.browser.fill import legal_answer
+    cit = Profile.model_validate(base_profile(visa={"status": "citizen_gc", "needs_sponsorship_future": False,
+                                                    "confirmed": True}))
+    o = Profile.model_validate(base_profile(visa={"status": "opt_stem_opt", "needs_sponsorship_future": True,
+                                                  "confirmed": True}))
+    assert legal_answer(q, cit) == citizen
+    assert legal_answer(q, o) == opt
+
+
+def test_unclear_sponsorship_answer_is_flagged_not_changed():
+    from autoapply.browser.fields import Field
+    from autoapply.browser.fill import legal_mismatches, legal_note
+    o = Profile.model_validate(base_profile(visa={"status": "opt_stem_opt", "needs_sponsorship_future": True,
+                                                  "confirmed": True}))
+    f = Field(key="id:q", label="Do you require visa sponsorship?", kind="select", options=["Yes", "No"],
+              value="No", filled_by_simplify=True)
+    assert legal_mismatches([f], o) == []                     # not "corrected"
+    assert "does not say whether it means now or in the future" in legal_note(f, o)
+    clear = Field(key="id:r", label="Will you now or in the future require sponsorship?", kind="select",
+                  options=["Yes", "No"], value="No", filled_by_simplify=True)
+    assert legal_note(clear, o) is None and legal_mismatches([clear], o) == [(clear, "yes")]
+
+
+def test_spelled_out_us_states_are_us():
+    from autoapply.filters import is_us
+    for loc in ("Dublin, Ohio", "Bloomington, Indiana", "Santa Fe, New Mexico", "Remote - Indiana"):
+        assert is_us(loc), loc
+    for loc in ("Dublin, Ireland", "Bangalore, India", "Mexico City, Mexico"):
+        assert not is_us(loc), loc
+
+
+def test_h1b_list_missing_vs_unreadable(tmp_path):
+    from autoapply.config import SourceCfg
+    from autoapply.github import GitHubError
+    from autoapply.sources import JobMonitorSource, SourceError
+
+    class GH:
+        def __init__(self, status):
+            self.status = status
+
+        def read_raw(self, repo, path, branch):
+            raise GitHubError(f"HTTP {self.status}", self.status)
+
+    cfg = SourceCfg(type="jobmonitor", repo="me/job-monitor")
+    assert JobMonitorSource(cfg, None, github=GH(404)).h1b() is None        # the repo has none
+    with pytest.raises(SourceError, match="H-1B list"):
+        JobMonitorSource(cfg, None, github=GH(503)).h1b()
+    bad = tmp_path / "h1b.json"
+    bad.write_text("{truncated")
+    with pytest.raises(SourceError, match="H-1B list"):
+        JobMonitorSource(SourceCfg(type="jobmonitor", repo="me/jm", h1b_path=str(bad)), None).h1b()

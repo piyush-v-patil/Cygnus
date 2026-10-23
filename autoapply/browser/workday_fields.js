@@ -27,6 +27,21 @@
     }
     return t;
   };
+  // repeatable entries (Simplify 3.1.10's Workday ids: workExperience-N, education-N,
+  // websitePanelSet-N, language-N): "Work Experience 2 › From", so one entry's answer is
+  // never taken for another entry, or for another company's form
+  const SECTION_NAMES = { workExperience: "Work Experience", education: "Education", websitePanelSet: "Website",
+                          language: "Language", Languages: "Language" };
+  const sectionOf = (b) => {
+    for (let el = b.parentElement; el && el !== root; el = el.parentElement) {
+      const m = /^(workExperience|education|websitePanelSet|language|Languages)-(\d+)/.exec(el.getAttribute("data-automation-id") || "");
+      if (!m) continue;
+      const h = el.querySelector("h3, h4, h5, [role=heading]");
+      const t = clean(h ? h.innerText : "");
+      return t && /\d/.test(t) ? t : `${SECTION_NAMES[m[1]]} ${m[2]}`;
+    }
+    return "";
+  };
   const required = (b, label) => /\*\s*$/.test(label) || !!b.querySelector('[aria-required="true"], [required]')
     || !!b.querySelector('abbr[title="required"]');
   const keyFor = (b, ctrl) => {
@@ -39,13 +54,15 @@
 
   for (const b of blocks) {
     if (!visible(b)) continue;
-    const label = labelOf(b);
-    const req = required(b, label);
+    const own = labelOf(b);
+    const req = required(b, own);
+    const section = sectionOf(b);
+    const label = section ? `${section} › ${own}` : own;
     const push = (kind, ctrl, value, options, extra) => {
       const key = keyFor(b, ctrl);
       b.setAttribute("data-aa-key", key);
       out.push(Object.assign({ key, label, kind, required: req, value: value || "", options: options || [],
-                               visible: true }, extra || {}));
+                               visible: true, section }, extra || {}));
     };
 
     const file = b.querySelector('input[type="file"]');
@@ -107,6 +124,18 @@
       push("text", input, input.value, [], { input_type: input.type || "text",
                                               max_length: input.maxLength > 0 ? input.maxLength : null });
     }
+  }
+  // the resume upload area is not always inside a formField block (Simplify's own Workday
+  // selector looks for resumeUpload / quickApplyUpload with a file-upload-input-ref)
+  for (const up of root.querySelectorAll('[data-automation-id="resumeUpload"], [data-automation-id="quickApplyUpload"]')) {
+    if (up.closest('[data-automation-id^="formField-"]') || !visible(up)) continue;
+    const file = up.querySelector('input[type="file"]');
+    if (!file) continue;
+    const key = keyFor(up, file);
+    up.setAttribute("data-aa-key", key);
+    const items = [...up.querySelectorAll('[data-automation-id="file-upload-item"]')].map((i) => clean(i.innerText));
+    out.push({ key, label: "Resume/CV", kind: "file", required: true, value: items.join("; "), options: [],
+               visible: true, section: "", accept: file.getAttribute("accept") || "" });
   }
   return out;
 }

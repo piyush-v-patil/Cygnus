@@ -67,15 +67,18 @@ class Writeback:
         self.repo = repo
         self.branch = branch
         self.gh = github
+        self.failed = False           # after a failed flush only the end of the run tries again
 
     def queue(self, posting_key: str, change: dict):
         if not self.ledger.queue_writeback(posting_key, change, self.source_name):
             return
-        if len(self.ledger.pending_writebacks(self.source_name)) >= FLUSH_EVERY:
+        if not self.failed and len(self.ledger.pending_writebacks(self.source_name)) >= FLUSH_EVERY:
             self.flush()
 
     def flush(self) -> int:
-        """One commit for everything pending. Returns how many entries were written."""
+        """One commit for everything pending. Returns how many entries were written. A failure
+        stops the flushes `queue` makes on its own (each re-downloads jobs.json) until a later
+        flush works; the end of the run still tries."""
         pending = self.ledger.pending_writebacks(self.source_name)
         if not pending:
             return 0
@@ -95,11 +98,14 @@ class Writeback:
             except (GitHubError, ValueError) as e:
                 log.warning("write-back failed (will retry next time): %s", e)
                 self.ledger.mark_writebacks(ids, error=str(e)[:300])
+                self.failed = True
                 return 0
             if status == 409:
                 log.info("write-back conflict, re-reading (attempt %d)", attempt + 1)
                 continue
             self.ledger.mark_writebacks(ids)
+            self.failed = False
             return len(changes)
         self.ledger.mark_writebacks(ids, error="409 conflict after 3 attempts")
+        self.failed = True
         return 0

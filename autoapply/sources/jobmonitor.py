@@ -7,6 +7,7 @@ their Greenhouse board token.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Iterator
 
@@ -15,6 +16,8 @@ import yaml
 from ..config import SourceCfg
 from ..github import GitHub, GitHubError
 from .base import Posting, SourceError
+
+log = logging.getLogger(__name__)
 
 JOBS_PATH = "docs/data/jobs.json"
 H1B_PATH = "docs/data/h1b.json"
@@ -64,8 +67,14 @@ class JobMonitorSource:
                 return None
             try:
                 self._h1b = json.loads(self._read(H1B_PATH, local))
-            except (SourceError, ValueError):
-                self._h1b = {}
+            except SourceError as e:
+                if getattr(e.__cause__, "status", None) != 404:
+                    raise SourceError(f"{self.name}: the H-1B list (h1b.json) could not be read: {e}") from e
+                log.warning("%s has no h1b.json: the sponsor filter is off for it", self.name)
+                self._h1b = {}                     # the repo has no list: nothing to filter with
+            except (ValueError, OSError) as e:
+                # never quietly "no list": that would let every non-sponsor through
+                raise SourceError(f"{self.name}: the H-1B list (h1b.json) could not be read: {e}") from e
         return self._h1b or None
 
     def gh_tokens(self) -> dict[str, str]:
@@ -99,6 +108,7 @@ class JobMonitorSource:
                 posted_at=j.get("posted_at"), first_seen=j.get("first_seen"),
                 source_name=self.name, source_ref=job_id,
                 monitor_status=j.get("status", "new"), closed_at=j.get("closed_at"),
+                extra={"skipped_by": j.get("skipped_by"), "applied_via": j.get("applied_via")},
             )
 
     def check(self) -> str:

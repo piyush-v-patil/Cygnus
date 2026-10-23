@@ -13,13 +13,14 @@ from datetime import datetime, timedelta, timezone
 from . import ats, blockers
 from .ats.detect import parse_key
 from .context import Context
-from .filters import prefilter, us_person_company
+from .filters import location_ok, prefilter, us_person_company
 from .h1b import H1BIndex
-from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, RECHECKABLE, SCORED,
-                     SKIPPED, STUCK)
-from .llm import BudgetExceeded, LLMError
+from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, NEEDS_INPUT, READY,
+                     RECHECKABLE, SCORED, SKIPPED, STUCK, IllegalTransition)
+from .llm import BudgetExceeded, LLMError, LLMUnavailable
 from .llm.score import PROMPT_VERSION as SCORE_VERSION
 from .llm.score import score_posting
+from .sources import SourceError
 from .writeback import skip_change, unskip_change
 
 log = logging.getLogger(__name__)
@@ -39,13 +40,41 @@ class RunStats(Counter):
 
 
 # ------------------------------------------------------------------- sync --
+# a posting still waiting here stops when you mark it applied / skip in job-monitor, or it closes there
+TRACKER_STOPPABLE = {ENRICHED, SCORED, HELD, ERROR, READY, NEEDS_INPUT, STUCK}
+
+
+def tracker_says_stop(p) -> str | None:
+    """Why the tracker now rules this posting out (None: it does not). Marks this tool
+    wrote itself (skip by autoapply, applied via autoapply) are not the user's decision."""
+    if p.closed_at:
+        return "monitor_closed"
+    st = (p.monitor_status or "new").strip().lower()
+    if st == "new":
+        return None
+    extra = p.extra or {}
+    if st == "skip" and extra.get("skipped_by") == "autoapply":
+        return None
+    if st == "applied" and extra.get("applied_via") == "autoapply":
+        return None
+    return f"monitor_{st}"
+
+
 def sync(ctx: Context, stats: RunStats) -> None:
     """Read every source, record postings, run the free rules (§6.4)."""
     led, profile = ctx.ledger, ctx.profile
     eligible: set[str] = set()
     for src in ctx.sources:
         postings = list(src.postings())
-        h1b_data = src.h1b()
+        try:
+            h1b_data = src.h1b() if profile.visa.sponsor_filter != "off" else None
+        except SourceError as e:
+            # without the list, new postings cannot be checked for sponsorship: this source
+            # waits for the next run; postings already past this step carry on
+            log.warning("%s - skipping new postings from this source this run", e)
+            ctx.notifier.warn(f"{e}. New postings from it wait for the next run.")
+            stats["source_skipped"] += 1
+            continue
         tokens = src.gh_tokens()
         h1b = H1BIndex(h1b_data) if h1b_data is not None else None
         with led.tx():
@@ -57,6 +86,12 @@ def sync(ctx: Context, stats: RunStats) -> None:
                 if led.upsert_discovered(key, fields):
                     stats["new"] += 1
                 row = led.get(key)
+                if row.state in TRACKER_STOPPABLE:
+                    why = tracker_says_stop(p)
+                    if why:
+                        led.set_state(key, CLOSED, why, "changed in the tracker")
+                        stats["tracker_closed"] += 1
+                        continue
                 recheck = (row.state, row.reason if row.state == SKIPPED else None) in RECHECKABLE
                 if row.state != DISCOVERED and not recheck:
                     continue      # §6.4.1: already terminal or in flight
@@ -93,14 +128,25 @@ def _retry_stage(row) -> str | None:
 
 
 def fail(ctx: Context, key: str, stage: str, err: Exception | str, stats: RunStats):
-    row = ctx.ledger.get(key)
+    """One more failure for this posting at `stage`. The third in a row gives up on it: a form
+    goes to Stuck for you; a posting that never got as far as a form (reading the job, scoring
+    it) is skipped. The count resets whenever the posting makes progress."""
+    led = ctx.ledger
+    row = led.get(key)
     if row.get("error_count", 0) + 1 >= MAX_ERROR_RETRIES:
-        ctx.ledger.set_state(key, STUCK, f"{stage}: {err}"[:300])
-        ctx.ledger.upsert_application(key, lane=STUCK, stuck_reason=f"failed {MAX_ERROR_RETRIES} times "
-                                      f"at {stage}: {err}"[:500])
-        stats["stuck"] += 1
-        return
-    ctx.ledger.set_state(key, ERROR, f"{stage}: {err}"[:300])
+        try:
+            if stage == "fill":
+                led.set_state(key, STUCK, f"{stage}: {err}"[:300])
+                led.upsert_application(key, lane=STUCK, stuck_reason=f"failed {MAX_ERROR_RETRIES} times "
+                                       f"at {stage}: {err}"[:500])
+                stats["stuck"] += 1
+            else:
+                led.set_state(key, SKIPPED, f"failed_{stage}", str(err)[:300])
+                stats.skipped(f"failed_{stage}")
+            return
+        except IllegalTransition:
+            pass                          # not reachable from where it is: count one more error
+    led.set_state(key, ERROR, f"{stage}: {err}"[:300])
     stats["error"] += 1
 
 
@@ -108,7 +154,8 @@ def enrich(ctx: Context, stats: RunStats, limit: int | None, clients: dict | Non
     """Fetch descriptions, detect closed postings, apply regex blockers (§7)."""
     led, profile = ctx.ledger, ctx.profile
     clients = clients or ats.clients()
-    rows = led.postings_in([DISCOVERED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "enrich"]
+    # retries first: behind a large backlog and a --limit they would otherwise never come up
+    rows = [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "enrich"] + led.postings_in([DISCOVERED])
     done: list[str] = []
     for row in rows:
         if limit is not None and len(done) >= limit:
@@ -130,8 +177,9 @@ def enrich(ctx: Context, stats: RunStats, limit: int | None, clients: dict | Non
                 fill = {k: getattr(det, k) for k in ("company", "title", "location")
                         if getattr(det, k) and not row.get(k)}
                 led.update_fields(key, **fill)
-        except ats.FetchError as e:
-            fail(ctx, key, "enrich", e, stats)
+        except (ats.FetchError, ValueError, KeyError, TypeError) as e:
+            # ValueError: a 200 that is not the JSON promised (a captive portal, an error page)
+            fail(ctx, key, "enrich", e if isinstance(e, ats.FetchError) else f"{type(e).__name__}: {e}", stats)
             continue
         led.set_state(key, ENRICHED)
         stats["enriched"] += 1
@@ -173,6 +221,8 @@ def not_targeted(ctx: Context, row) -> str | None:
         return "ats_not_allowed"
     if us_person_company(row.get("company"), ctx.profile):
         return "us_person_company"
+    if row.get("location") is not None and not location_ok(row.get("location"), f.location, f.metros):
+        return "location"
     return None
 
 
@@ -251,6 +301,10 @@ def score(ctx: Context, stats: RunStats, limit: int | None = None, rescore: bool
                 stats["stopped"] = str(e)
                 log.warning("budget reached - no more Claude calls this run")
                 break
+            except LLMUnavailable as e:
+                stats["stopped"] = str(e)
+                log.warning("Claude is unavailable - scoring stops for this run: %s", e)
+                break
             except LLMError as e:
                 fail(ctx, key, "score", e, stats)
                 continue
@@ -315,6 +369,8 @@ def fill_candidates(ctx: Context, limit: int | None) -> list[str]:
             break
         if not_targeted(ctx, r):
             continue                     # filters narrowed since it was scored: not filled now
+        if led.score(r.posting_key) is None:
+            continue                     # never fill what was not scored (blockers, fit)
         if cap and taken[r.get("company")] >= cap:
             continue
         if r.posting_key.startswith("workday:"):
@@ -368,13 +424,15 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
 RUN_LINES = [
     ("interrupted", "left mid-fill by a closed run, queued again"),
     ("retried", "Stuck last time for a temporary reason, filled again"),
+    ("tracker_closed", "marked applied/skip or closed in job-monitor since, dropped here"),
+    ("source_skipped", "sources whose new jobs wait for the next run (H-1B list unreadable)"),
     ("new", "new jobs found in your sources"),
     ("eligible", "jobs waiting to be looked at (passed the free filters)"),
     ("filtered_out", "filtered out by the free rules"),
     ("unsupported", "on a site the tool cannot apply on"),
     ("enriched", "looked at this run (description fetched; --limit caps this)"),
     ("closed", "closed postings"),
-    ("not_targeted", "not targeted by your current filters (tier, role, site or a US-person-only employer)"),
+    ("not_targeted", "not targeted by your current filters (tier, role, site, location or a US-person-only employer)"),
     ("released", "earlier low-fit skips moved back to held"),
     ("scored", "scored by Claude"),
     ("held", "held: fit score below your cutoff"),

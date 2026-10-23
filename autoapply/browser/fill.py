@@ -7,8 +7,11 @@ ever submitted here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import re
+import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +19,7 @@ from pathlib import Path
 from ..ats import application_url, form_hints, parse_key
 from ..config import Profile
 from ..ledger import ERROR, FILLING, NEEDS_INPUT, READY, SCORED, STUCK
-from ..llm import BudgetExceeded, LLMError
+from ..llm import BudgetExceeded, LLMError, LLMUnavailable
 from ..llm.answer import answer_fields
 from ..llm.cover_letter import render_pdf, write_cover_letter
 from ..normalize import normalize_question, slug
@@ -71,8 +74,13 @@ class FillOutcome:
 
 # ------------------------------------------------------------ the checks --
 SPONSOR = re.compile(r"sponsor", re.I)
-FUTURE = re.compile(r"future|at any (point|time)|now or|will you (ever|now|in)", re.I)
+FUTURE = re.compile(r"future|at any (point|time)|now or|now and|\bwill you\b|\bwould you\b", re.I)
+NOW = re.compile(r"\b(currently|at this time|right now|presently|today)\b", re.I)
+# "authorized to work ... without (the need for) (employer|visa) sponsorship": a Yes means NO sponsorship
+WITHOUT = re.compile(r"\bwithout\b[^?.]{0,40}\bsponsor", re.I)
 AUTHORIZED = re.compile(r"(legally )?authori[sz]ed to work|eligible to work|work authori[sz]ation", re.I)
+UNCLEAR_NOTE = ("left as Simplify filled it: the question does not say whether it means now or in the future, "
+                "and your visa answers differ (no sponsorship needed now, needed later)")
 
 
 def _yes_no(v: str) -> str | None:
@@ -84,15 +92,43 @@ def _yes_no(v: str) -> str | None:
     return None
 
 
-def expected_legal_answer(label: str, profile: Profile) -> str | None:
-    """What the user's confirmed visa answers say this yes/no question must be."""
+def legal_answer(label: str, profile: Profile) -> tuple[str | None, bool]:
+    """(the yes/no answer your confirmed visa answers give, whether the question is clear).
+
+    Sponsorship questions are read for their time frame (now or in the future) and for
+    negation ("authorized to work without sponsorship" asks the opposite). When the
+    question names no time and your answers for now and later differ (OPT), it is unclear:
+    the answer is not changed, only flagged for you.
+    """
     v = profile.visa
+    needs_now = v.status == "needs_sponsorship_now"
+    needs_later = needs_now or (v.status != "citizen_gc" and v.needs_sponsorship_future)
     if SPONSOR.search(label):
-        needs_now = v.status == "needs_sponsorship_now"
-        needs_future = needs_now or (v.status != "citizen_gc" and v.needs_sponsorship_future)
-        return "yes" if (needs_future if FUTURE.search(label) else needs_now) else "no"
+        if FUTURE.search(label):
+            needs, clear = needs_later, True
+        elif NOW.search(label):
+            needs, clear = needs_now, True
+        else:
+            needs, clear = needs_later, needs_now == needs_later
+        if WITHOUT.search(label):
+            return ("no" if needs else "yes"), clear
+        return ("yes" if needs else "no"), clear
     if AUTHORIZED.search(label):
-        return "no" if v.status == "needs_sponsorship_now" else "yes"
+        return ("no" if needs_now else "yes"), True
+    return None, False
+
+
+def expected_legal_answer(label: str, profile: Profile) -> str | None:
+    """What the user's confirmed visa answers say this yes/no question must be (clear questions only)."""
+    ans, clear = legal_answer(label, profile)
+    return ans if clear else None
+
+
+def legal_note(f: Field, profile: Profile) -> str | None:
+    """A ⚠ note for a filled sponsorship answer the tool cannot judge (see legal_answer)."""
+    ans, clear = legal_answer(f.label, profile)
+    if ans and not clear and _yes_no(f.value):
+        return UNCLEAR_NOTE
     return None
 
 
@@ -120,6 +156,9 @@ async def correct_legal_answers(page, fields: list[Field], profile: Profile, pla
         f.filled_by_simplify = False                 # not Simplify's answer any more
         if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
+        elif f.kind == "wd_multi" and f.required and not f.options:
+            from .workday_widgets import multi_options
+            f.options = await multi_options(page, f.key)
         value = next((o for o in f.options if _yes_no(o) == exp), None) if f.options else exp.capitalize()
         if value is None:
             missing.append(_missing(f, note + " - pick the right option"))
@@ -187,6 +226,54 @@ def simplify_turn() -> asyncio.Lock:
     return lock
 
 
+# the running form's time book: waiting for another form's turn does not count against its limit
+_turn_track: contextvars.ContextVar[dict | None] = contextvars.ContextVar("turn_track", default=None)
+
+
+@contextlib.asynccontextmanager
+async def my_turn(note: str):
+    """Hold Simplify's turn; the wait for it is booked as waiting, not as filling."""
+    turn = simplify_turn()
+    if turn.locked():
+        log.info(note)
+    t = _turn_track.get()
+    if t is not None:
+        t["waiting_since"] = time.monotonic()
+    try:
+        await turn.acquire()
+    finally:
+        if t is not None and "waiting_since" in t:
+            t["waited"] = t.get("waited", 0.0) + time.monotonic() - t.pop("waiting_since")
+    try:
+        yield
+    finally:
+        turn.release()
+
+
+async def within_limit(coro, limit: float, track: dict):
+    """`coro` with `limit` seconds of its own time: time spent waiting for another form's
+    turn (Simplify, or a Workday walk holding the front) is added back. TimeoutError past it."""
+    token = _turn_track.set(track)
+    task = asyncio.ensure_future(coro)
+    _turn_track.reset(token)
+    start = time.monotonic()
+    try:
+        while True:
+            waiting = time.monotonic() - track["waiting_since"] if "waiting_since" in track else 0.0
+            left = start + limit + track.get("waited", 0.0) + waiting - time.monotonic()
+            if left <= 0:
+                raise asyncio.TimeoutError
+            done, _ = await asyncio.wait({task}, timeout=min(left, 5.0))
+            if done:
+                return task.result()
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        raise
+
+
 async def open_workday(ctx, page, posting_key: str) -> None:
     """Open a Workday application ("Apply Manually"); the walk handles what it shows."""
     try:
@@ -197,10 +284,7 @@ async def open_workday(ctx, page, posting_key: str) -> None:
 
 
 async def run_simplify(ctx, page, hints: dict) -> None:
-    turn = simplify_turn()
-    if turn.locked():
-        log.info("    waiting for Simplify (one form at a time)")
-    async with turn:
+    async with my_turn("    waiting for Simplify (one form at a time)"):
         try:
             await page.bring_to_front()
         except Exception:  # noqa: BLE001 - a tab that cannot come forward still gets its try
@@ -297,7 +381,8 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
 
     for f in fields:
         if f.filled_by_simplify and f.kind != "file":
-            plan.append(PlanEntry(f.key, f.label, f.kind, f.value, "simplify", f.required, f.options))
+            plan.append(PlanEntry(f.key, f.label, f.kind, f.value, "simplify", f.required, f.options,
+                                  note=legal_note(f, profile)))
 
     # §8.4 the one exception to "Simplify wins": the resume chosen for this job
     log.info("    Simplify filled %d field(s)", sum(f.filled_by_simplify for f in fields))
@@ -359,6 +444,9 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
             continue
         if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
+        elif f.kind == "wd_multi" and f.required and not f.options:
+            from .workday_widgets import multi_options
+            f.options = await multi_options(page, f.key)
         # a capped option list (School: thousands) is not a complete list to match against;
         # the combobox fill types the answer and fails loudly if no option matches
         truncated = len(f.options) >= OPTION_CAP
@@ -369,7 +457,8 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
                                       f.required, f.options, evidence=prior.get("evidence"),
                                       facts_used=prior.get("facts_used") or [], claude_kind=prior.get("claude_kind")))
             continue
-        banked = ctx.answers.lookup(f.label, f.answer_kind, None if truncated else (f.options or None))
+        banked = None if f.section else ctx.answers.lookup(f.label, f.answer_kind,
+                                                           None if truncated else (f.options or None))
         if banked is not None:
             if await _try_fill(page, f, banked, missing):
                 plan.append(PlanEntry(f.key, f.label, f.kind, banked, "answer_bank", f.required, f.options))
@@ -406,9 +495,12 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
 
 
 def _missing(f: Field, reason: str) -> dict:
-    return {"key": f.key, "label": f.label, "kind": f.kind, "answer_kind": f.answer_kind,
-            "options": f.options, "required": f.required, "reason": reason,
-            "question": normalize_question(f.label)}
+    m = {"key": f.key, "label": f.label, "kind": f.kind, "answer_kind": f.answer_kind,
+         "options": f.options, "required": f.required, "reason": reason,
+         "question": normalize_question(f.label)}
+    if f.section:              # one entry of a repeatable section: this form's answer only
+        m["no_bank"] = True
+    return m
 
 
 async def _try_fill(page, f: Field, value, missing: list) -> bool:
@@ -481,6 +573,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     async def handle(bs, key):
         row = led.get(key)
         done["n"] += 1
+        if key.startswith("workday:"):
+            from .workday import account_blocked, company_of
+            if account_blocked(ctx, key):          # sign-in there failed earlier in this run
+                log.info("[%d/%d] %s - %s: waiting, signing in to %s's Workday failed", done["n"], total,
+                         row.get("company"), row.get("title"), company_of(key))
+                return
         log.info("[%d/%d] %s - %s", done["n"], total, row.get("company"), row.get("title"))
         if row.state == ERROR:
             led.set_state(key, FILLING, None, "retry")
@@ -494,7 +592,7 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             # §15.8 asks for the check after the first autofill; it is free, so every
             # form is checked - the first one that carries the question is the first check
             try:
-                out = await asyncio.wait_for(fill_one(ctx, bs, key, check_consistency=True, track=track), limit)
+                out = await within_limit(fill_one(ctx, bs, key, check_consistency=True, track=track), limit, track)
             except asyncio.TimeoutError:
                 err = Stuck("timed_out", f"no result after {int(limit)}s while {track.get('step', 'starting')}")
                 err.page = track.get("page")
@@ -521,6 +619,11 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             led.set_state(key, SCORED, None, "requeued: budget")
             state["stop"] = str(e)
             stats["stopped"] = str(e)
+        except LLMUnavailable as e:
+            page = getattr(e, "page", None)
+            led.set_state(key, SCORED, None, "requeued: Claude unavailable")
+            state["stop"] = f"Claude is unavailable: {e}"
+            stats["stopped"] = state["stop"]
         except LLMError as e:
             page = getattr(e, "page", None)
             log.info("    -> Error, will be retried next run: %s", e)

@@ -1,13 +1,13 @@
 """`autoapply workday`: the Workday login the tool signs in with, and which companies
-still need an account. The tool never creates accounts: you do, once per company,
-with the same email and password."""
+still need an account. With workday.create_accounts (the default) a run creates a
+missing account with that login; otherwise you create them, once per company."""
 from __future__ import annotations
 
 import getpass
 from collections import Counter, defaultdict
 
 from .ats import application_url, parse_key
-from .browser.workday import accounts, account_key
+from .browser.workday import ACCOUNTS_KEY, accounts, account_key
 from .config import save_secret
 
 WAITING = ("scored", "held", "enriched", "discovered", "needs_input", "ready", "stuck")
@@ -47,7 +47,14 @@ def _login(ctx) -> int:
         print("The two did not match; try again.")
     save_secret(ctx.paths, "WORKDAY_EMAIL", email)
     save_secret(ctx.paths, "WORKDAY_PASSWORD", pw)
-    print("Saved.")
+    blocked = [k for k, v in accounts(ctx).items() if v.get("status") in ("no_account", "verify_email")]
+    if blocked:                    # a new login deserves a new try at the companies that refused the old one
+        acc = accounts(ctx)
+        for k in blocked:
+            acc.pop(k, None)
+        ctx.state_set(ACCOUNTS_KEY, acc)
+    print("Saved." + (f" {len(blocked)} company(ies) where signing in failed will be tried again; "
+                      "`autoapply requeue --lane stuck` refills the postings that stopped there." if blocked else ""))
     if "workday" not in ctx.profile.filters.ats_allowed:
         print("To apply on Workday, add workday to filters.ats_allowed in profile.yaml:\n"
               "  ats_allowed: [greenhouse, ashby, lever, workday]")
@@ -78,9 +85,10 @@ def _list(ctx) -> int:
         st = acc.get(k, {}).get("status")
         print(f"{tenant:<22} {sum(counts.values()):>7}  {STATUS.get(st, 'not tried yet')}")
     if ctx.profile.workday.create_accounts:
-        print("\nWhere signing in fails, the next run creates the account with your Workday login and\n"
-              "signs in (workday.create_accounts). `autoapply requeue --lane stuck` retries the ones\n"
-              "that stopped at sign-in.")
+        print("\nWhere signing in fails, the next run creates the account with your Workday login, ticking\n"
+              "that company's account agreement box, and signs in (workday.create_accounts; set it to\n"
+              "false to create accounts yourself). Each company is tried once until you requeue:\n"
+              "`autoapply requeue --lane stuck` retries the ones that stopped at sign-in.")
     else:
         print("\nCreate an account: `autoapply workday open <company>` (Create Account is filled in for you).\n"
               "Then `autoapply requeue --lane stuck` retries the ones that stopped at sign-in.")

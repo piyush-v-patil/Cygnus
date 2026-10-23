@@ -40,6 +40,10 @@ def detect(url: str, company: str = "", gh_tokens: dict[str, str] | None = None)
     on a company's own careers site.
     """
     url = (url or "").strip()
+    if not re.match(r"https?://", url, re.I):
+        if not re.match(r"[\w-]+(\.[\w-]+)+(/|$)", url):     # javascript:, data:, file: are never a posting
+            return AtsRef("unsupported", None, None)
+        url = "https://" + url                                  # boards.greenhouse.io/... without a scheme
     if _LINKEDIN.match(url):
         return AtsRef("linkedin", None, None)
     m = _GH.match(url)

@@ -39,6 +39,8 @@ autoapply setup
 - **Fit cutoff.** Default 65, with an optional calibration run.
 - **Schedule.** Optional; see below.
 
+Keys, tokens and webhook URLs are typed hidden, so they can't end up in a screenshot. If a GitHub token is already saved, setup offers to replace it, for example after a leak. Running setup again keeps a dated copy of the old `profile.yaml` (`profile.yaml.<date>.bak`). It also keeps the settings it did not ask about, such as `review.port`, `workday.*` or `llm.pricing`.
+
 Before the first run:
 
 - **Sync your manual Applied marks.** Marks you made on the job-monitor dashboard stay in your browser until you add a GitHub token in the dashboard's ⚙ settings and they sync to `jobs.json`. Until then, the tool cannot see them and may re-attempt jobs you already applied to by hand.
@@ -71,7 +73,7 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 | Lane | What you do |
 |---|---|
 | **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. **Open form to check** shows the real application in the tool's browser, where you can change anything. Then **Approve & submit** (it sends the form as it stands) or **Reject**. If you sent it yourself in the form's tab (after a code or a check there, say), click **I submitted it** to record it. *Approve all visible* still submits them one at a time. |
-| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. **I submitted it** records one you sent yourself. |
+| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. **I submitted it** records one you sent yourself. **Fill again** (or **Fill all again**) queues it to be filled from scratch on the next run with your saved answers, for example when its tab is gone. |
 | **Stuck** | A CAPTCHA, login wall, Simplify failure, failed upload, or a form that changed. **Open form** brings the tab up, or reopens it and refills it from the plan. Finish it by hand, then click **I submitted it** (a screenshot is recorded) or **Give up**. **Fill again** (or **Fill all again**) queues it to be filled from scratch on the next run. Temporary trouble (Simplify not ready, a page that did not load, a timeout) is filled again automatically by the next run, at most twice per application. |
 | **History** | Every submitted application, with its saved copy. |
 
@@ -106,7 +108,9 @@ Three things are not written back:
 
 ### Workday
 
-Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. If Workday wants the email address verified first, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
+Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. Creating an account ticks that company's account agreement box for you. If Workday wants the email address verified first, or the form shows a CAPTCHA, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
+
+Each company is tried **once** until you requeue. After a failed sign-in or account creation, the company's other postings wait without opening, because repeated failed sign-ins are how Workday accounts get locked. Saving a new login with `autoapply workday login` lets those companies be tried again. Workday passwords need 8 or more characters with an uppercase letter, a lowercase letter, a number and a special character; `workday login` checks this.
 
 1. `autoapply workday login` saves the email and password to `secrets.env`; they are hidden in logs. `autoapply setup` asks for them too.
 2. Add `workday` to `filters.ats_allowed` in `profile.yaml`.
@@ -120,12 +124,26 @@ If an account was made with Simplify's button anyway, Cygnus also tries the pass
 A Workday application is several pages: My Information, My Experience, Application Questions, Voluntary Disclosures and Review. On each page, Simplify fills what it knows. Cygnus then fills the rest the usual way (your saved answers, your resume, Claude) and clicks *Save and Continue*. It stops on **Review**, and Submit is clicked only after you approve.
 
 - A page with questions only you can answer stops there, as *Needs input*. When you answer, the tab carries on from that page, to Review or to the next questions.
+- Repeated entries (Work Experience 1, 2, …; Education; Websites) are asked as "Work Experience 2 › From". Those answers fill this form only; they are never saved to `answers.yaml` or used on other forms.
+- Pick-lists with sub-menus, such as *How did you hear about us*, offer their choices as "Job Board > LinkedIn Job Posting". Cygnus opens the sub-menu to pick it.
+- Your role's resume goes into Workday's resume upload area. If a company's pages have none, the record says no resume was attached instead of naming one.
+- Steps that share a name (two "Application Questions" pages) are told apart by their step number.
+- A job page whose Apply button offers no *Apply Manually*, a page the tool doesn't know (named in the card), or an error Workday shows outside a question goes to *Stuck* with what the page said. The walk doesn't wait out the time limit.
 - The tab may be gone by approval time. Workday keeps the unfinished application in your account, so Cygnus reopens it and walks to Review again with your answers.
-- After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* instead of being recorded as applied.
+- After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* (`submit_unconfirmed`) instead of being recorded as applied. Check the tab, then click **I submitted it** or **Not sent - Submit it again**.
+- A Workday tab older than `browser.tab_max_age_min` is reopened and walked to Review again before it can be sent, because Workday's sign-in may have run out.
 - A Workday form can take 5–10 minutes. `browser.workday_form_timeout_s` (900 s by default) is the limit per form.
 - **One Workday application at a time.** Simplify fills each new Workday page by itself and pauses while its tab is hidden ("Please stay on this Workday page"). So a Workday application keeps the front of the tool's browser from sign-in to Review, and the next one waits. Greenhouse, Ashby and Lever forms in the same run are filled first.
 
 ### After Submit
+
+**Never sent twice.** Cygnus records the moment it clicks Submit, before the click. Once that is recorded, the application is never sent again unless you say so:
+
+- If Cygnus or the PC stops before the site confirms, the next run moves the card to *Stuck* (`submit_interrupted`). Check your email or the site, then click **I submitted it**, or **Not sent - Submit it again**.
+- **Fill again**, **Fill all again**, `requeue` and the automatic retries all skip applications whose Submit was clicked.
+- If the open tab already shows the site's confirmation (you sent it yourself), **Approve** records it as submitted by you instead of sending it again.
+- On Workday, if Approve has to walk the application to Review first (its tab was gone, or it stopped on an earlier page), it stops on Review for you to look at. Click Approve again to send it.
+
 
 Cygnus counts an application as sent only when the board confirms it: a confirmation page, a success message, or a confirmation address. Workday has its own check, described above.
 
@@ -133,6 +151,8 @@ Cygnus counts an application as sent only when the board confirms it: a confirma
 - **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
 
 ### Simplify, one form at a time
+
+Simplify has a setting, *Continue and submit automatically*, that would click Continue, or Submit, by itself. Cygnus switches it off every time it starts the browser. If it can't be switched off, the run stops instead of risking an application you did not approve.
 
 Several forms are filled in parallel (`browser.parallel_tabs`), but Simplify works on one at a time. Simplify pauses while its tab is hidden, so each form comes to the front of the tool's browser for its turn. Cygnus waits for Simplify's own "finished" status. If Simplify doesn't report one, it falls back to watching the Autofill button and the form.
 
@@ -149,11 +169,11 @@ With `schedule.mode: daily` or `twice_daily`, `autoapply schedule install` regis
 - It runs only while you are logged on, because the browser window is visible.
 - It has a 2-hour limit.
 
-A run missed while the PC was off is not made up. The next run carries on from the ledger. Only one run can happen at a time (`autoapply.lock`).
+A run missed while the PC was off is not made up. The next run carries on from the ledger. Only one run can happen at a time (`autoapply.lock`). An open `autoapply review` also holds the lock, so a scheduled run that starts while review is open is skipped and sends a Discord note. Close review (Ctrl+C) when you are done with it.
 
 ### Budget
 
-Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend.
+Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend. A model the table does not know, such as a new model id, is counted at the highest known rate, never as free; the health check says so. Set its price in `llm.pricing` to fix the count.
 
 - When this month's spend reaches `monthly_budget_usd`, the run stops before any Claude call and you get an alert.
 - If the budget runs out mid-run, the tool stops starting new calls and finishes what is in progress.
@@ -209,12 +229,18 @@ Posting states: `discovered → filtered_out | unsupported | enriched → closed
 | Simplify's "Before you autofill" card keeps coming back | Expected from Simplify itself (it resets on every browser start); the tool answers it from `browser.simplify_consent`. If it still shows, Simplify changed: see `apply_consent` in `autoapply/browser/simplify.py`. |
 | Many forms Stuck with `simplify_*` after a Simplify update | Re-run the Simplify step of `autoapply setup` to copy the new version. If the widget changed, update the selectors at the top of `autoapply/browser/simplify.py`. |
 | Health: *token rejected (expired?)* | Make a new fine-grained token and put it in `secrets.env` as `GITHUB_TOKEN=`. Pending write-backs are retried automatically. |
-| Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. |
+| Health: *budget reached* | Wait for next month or raise `llm.monthly_budget_usd`. Nothing is lost; the backlog waits in the ledger. `autoapply review` still opens, with a note, so you can approve what is already filled. A failing GitHub token or Discord webhook doesn't block review either. |
 | Run stopped: *Simplify's legal answers disagree with your profile* | Your Simplify profile's sponsorship/authorization answers differ from `visa:` in profile.yaml. Fix whichever is wrong. The affected application is in Stuck. |
 | Stuck: `simplify_not_ready` / `simplify_did_not_fill` | Simplify's profile did not load, or its autofill filled nothing (the tool clicks up to 3 times). Check `autoapply browser` shows your Simplify profile, then `autoapply requeue --lane stuck` and run again. |
-| Stuck: `timed_out` | One form took longer than `browser.form_timeout_s` (default 7 min); the reason says which step. `autoapply requeue --lane stuck` to try again. |
+| Stuck: `timed_out` | One form took longer than `browser.form_timeout_s` (default 7 min; Workday `browser.workday_form_timeout_s`); the reason says which step. Time spent waiting for another form to finish with Simplify does not count. `autoapply requeue --lane stuck` to try again. |
 | The run looks frozen | It prints each application and step as it goes (`[2/3] Company - Title`, `Simplify autofill`, `asking Claude ...`); a Claude answer for long essays can take a minute. Nothing asks for confirmation during a run: approve afterwards in `autoapply review`. |
-| *Another autoapply run is in progress* | Only one run at a time. If none is running, delete `autoapply.lock` in the profile folder. |
+| *Another autoapply run is in progress* | Only one run at a time, and an open `autoapply review` counts as one. Close the review window's command prompt (Ctrl+C) first. Delete `autoapply.lock` in the profile folder only if nothing is running. |
+| *Configuration problem: profile.yaml: `x` is written twice* | A setting appears twice in profile.yaml, so it is not clear which one you meant. The message gives both line numbers: delete one. |
+| *answers.yaml entry N is skipped* | That saved answer has a typo (for example an unknown `kind:`). The others still work, and the entry is kept in the file until you fix it. |
+| *autoapply run stopped on an unexpected error* | The message names a `...-crash.log` in the profile's `logs` folder, and Discord gets an alert. Share that file (secrets are already removed) when asking for help. |
+| Review: *That did not work (...)* | An action failed. Nothing was submitted by the error, and the log has the details. If you closed the tool's browser window, the next action opens a new one. |
+| Review: *... is already submitted; nothing was changed* | You clicked a card from an older page or another tab after that application had moved on. Reload the page. |
+| Discord: *the H-1B list (h1b.json) could not be read* | New postings from that source wait for the next run instead of skipping the sponsor check. Postings already in progress continue. Usually a passing network problem. |
 | A job you applied to by hand was attempted | Sync your dashboard marks to `jobs.json` (see Setup), or Reject it in review. |
 
 ## Development
@@ -227,4 +253,4 @@ pytest -m "not browser"      # without Chromium
 
 The browser tests use `tests/fixtures/forms/*.html`, local copies of the Greenhouse, Ashby and Lever form structures, and a stand-in for a Workday apply flow (sign-in, pages, widgets, errors, Review, confirmation). LLM calls go through `FakeTransport`, so the tests never touch the network. A test-mode submit asserts that Submit is never clicked.
 
-**Terms of service.** Automating Simplify and ATS sites may conflict with their terms. You accept that risk by using this tool. LinkedIn postings are never attempted, and the tool never bypasses CAPTCHAs or creates accounts.
+**Terms of service.** Automating Simplify and ATS sites may conflict with their terms. You accept that risk by using this tool. LinkedIn postings are never attempted, and the tool never bypasses CAPTCHAs. It creates Workday accounts only with your own Workday login, and only while `workday.create_accounts` is on.
