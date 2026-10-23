@@ -24,6 +24,19 @@ FORM = """<!doctype html><html><body>
 <label for=why>Why us?</label><textarea id=why></textarea>
 <script>
 const MODE = '%s';
+let status = null;
+if (MODE === 'bridge') {                 // Simplify's automation bridge (getFillStatus), as in 3.1.10
+  window.addEventListener('message', e => {
+    const d = e.data;
+    if (!d || d.type !== '__SIMPLIFY_AUTOMATION_REQUEST__' || d.method !== 'getFillStatus') return;
+    const until = Date.now() + Math.min(d.args[0] || 0, 120000);
+    const poll = () => (['filled', 'error', 'paused'].includes(status) || Date.now() >= until)
+      ? window.postMessage({type: '__SIMPLIFY_AUTOMATION_RESPONSE__', id: d.id,
+                            result: {completed: status === 'filled', fillStatus: status}}, '*')
+      : setTimeout(poll, 300);
+    poll();
+  });
+}
 const host = document.createElement('div'); host.className = 'simplify-jobs-shadow-root';
 document.body.appendChild(host);
 const root = host.attachShadow({mode: 'open'});
@@ -38,6 +51,12 @@ setTimeout(() => {                       // profile loaded: the login link gives
   b.addEventListener('click', () => {
     clicks += 1; window.__clicks = clicks;
     if (MODE === 'broken' || (MODE === 'second' && clicks < 2)) return;
+    if (MODE === 'bridge') {           // a slow fill the button text does not show; only the status does
+      status = 'filling';
+      setTimeout(() => { document.getElementById('first_name').value = 'Jane'; }, 500);
+      setTimeout(() => { document.getElementById('email').value = 'jane@example.com'; status = 'filled'; }, 3500);
+      return;
+    }
     b.textContent = 'Autofilling'; b.disabled = true;
     setTimeout(() => {
       document.getElementById('first_name').value = 'Jane';
@@ -67,6 +86,30 @@ def test_waits_for_profile_and_enabled_button():
     state, snap, clicks = asyncio.run(_run("ok", fetch_ms=1500))
     assert state == "ready"                       # "Fetching profile..." is not "logged out"
     assert snap["id:first_name"] == "Jane" and clicks == 1
+
+
+def test_waits_for_simplify_status_not_just_a_quiet_form():
+    # 3 s pass between the two fields with the button idle: only the status says it is not done
+    _, snap, clicks = asyncio.run(_run("bridge"))
+    assert snap["id:first_name"] == "Jane" and snap["id:email"] == "jane@example.com" and clicks == 1
+
+
+def test_fill_status_is_none_without_the_bridge():
+    from playwright.async_api import async_playwright
+
+    async def go():
+        async with async_playwright() as p:
+            b = await p.chromium.launch(executable_path=CHROMIUM)
+            page = await b.new_page()
+            await page.set_content(FORM % ("bridge", 100))
+            first = await simplify.fill_status(page)
+            await page.set_content("<p>no Simplify here</p>")
+            t = asyncio.get_running_loop().time()
+            none = await simplify.fill_status(page)
+            await b.close()
+            return first, none, asyncio.get_running_loop().time() - t
+    first, none, took = asyncio.run(go())
+    assert first == "none" and none is None and took < 2      # a silent page is told apart quickly
 
 
 def test_click_retried_when_simplify_does_not_start(monkeypatch):

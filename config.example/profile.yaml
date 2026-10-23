@@ -61,6 +61,7 @@ llm:
 schedule:
   mode: daily                        # manual | daily | twice_daily
   times: ["08:00"]                   # local time; two entries for twice_daily
+  limit: 50                          # jobs each scheduled run looks at (--limit); null = no limit
 
 notifications:
   discord: true

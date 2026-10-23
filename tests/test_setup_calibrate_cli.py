@@ -123,6 +123,8 @@ def test_task_scheduler_script():
     assert "-WakeToRun" in s and "-LogonType Interactive" in s and "New-TimeSpan -Hours 2" in s
     assert "-At '08:00'" in s and "-At '18:30'" in s
     assert "-m autoapply run --profile-dir" in s
+    s = install_script(["08:00"], r"C:\Python311\python.exe", None, 2, limit=50)
+    assert "-m autoapply run --limit 50'" in s                  # scheduled runs are capped too
 
 
 def test_run_lock(tmp_path):

@@ -27,6 +27,13 @@ START_TIMEOUT_S = 8.0                         # a click that shows no sign of fi
 FETCHING_TEXT = "Fetching profile"           # #login-button text while the profile loads (not logged out)
 CONSENT_TEXT = "Before you autofill"         # first-run data-consent card
 LOGIN_URL = "https://simplify.jobs/auth/login"
+# Simplify's automation bridge: its content script answers these window messages when
+# navigator.webdriver is true (as under Playwright). VERIFIED 2026-10-23 in the 3.1.10
+# content script. getFillStatus replies once its fillStatus is final or the wait ends.
+BRIDGE_REQUEST = "__SIMPLIFY_AUTOMATION_REQUEST__"
+BRIDGE_RESPONSE = "__SIMPLIFY_AUTOMATION_RESPONSE__"
+FILL_DONE = ("filled", "error", "paused")        # final for one page
+FILL_RUNNING = ("filling", "submitting")
 
 
 CONSENT_KEY = "simplify_data_consent"   # chrome.storage.local, read by the "Before you autofill" card
@@ -113,7 +120,35 @@ async def _has_text(page, text: str) -> bool:
              .some(h => h.shadowRoot && h.shadowRoot.textContent.includes(text))""", [HOST, text]))
 
 
+_BRIDGE_JS = """([req, resp, id, ms, grace]) => new Promise(resolve => {
+  const finish = v => { window.removeEventListener('message', on); clearTimeout(t); resolve(v); };
+  const on = e => { const d = e.data;
+    if (d && d.type === resp && d.id === id) finish(d.result ? (d.result.fillStatus || 'none') : 'none'); };
+  const t = setTimeout(() => finish(null), ms + grace);
+  window.addEventListener('message', on);
+  window.postMessage({type: req, id, method: 'getFillStatus', args: [ms]}, '*');
+})"""
+_bridge_ids = iter(range(1, 1 << 62))
+
+
+async def fill_status(page, wait_s: float = 0) -> str | None:
+    """Simplify's own fill status for the page ("ready", "filling", "filled", "error",
+    "paused", ... or "none" before its first fill), waiting up to `wait_s` for it to
+    become final. None when the bridge does not answer (older/newer Simplify, not
+    loaded yet, page navigating): callers then fall back to the panel button."""
+    ms = int(max(0.0, wait_s) * 1000)
+    try:
+        # the bridge answers a 0 ms question at once, so a silent page is told apart quickly
+        grace = 400 if ms == 0 else 2500
+        return await safe_evaluate(page, _BRIDGE_JS,
+                                   [BRIDGE_REQUEST, BRIDGE_RESPONSE, f"cygnus-{next(_bridge_ids)}", ms, grace])
+    except Exception:  # noqa: BLE001 - a closed or navigating page means "no answer"
+        return None
+
+
 async def _busy(page) -> bool:
+    if await fill_status(page) in FILL_RUNNING:
+        return True
     btn = page.locator(FILL_BUTTON)
     if not await btn.count():
         return False
@@ -157,7 +192,7 @@ async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
         if await _wait_started(page, hints, start, timeout_s=START_TIMEOUT_S):
             break
         log.info("  Simplify did not start filling; clicking Autofill again (%d of 3)", attempt + 2)
-    after = await wait_stable(page, hints, quiet_s=2.0, timeout_s=timeout_s, busy=lambda: _busy(page))
+    after = await _wait_done(page, hints, timeout_s)
     if not (_filled(after) - _filled(start)) and len(_filled(start)) < 2:
         raise SimplifyError("simplify_did_not_fill", "Simplify's autofill filled no field on this form")
     return after
@@ -165,6 +200,20 @@ async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
 
 def _filled(snapshot: dict[str, str]) -> set[str]:
     return {k for k, v in snapshot.items() if (v or "").strip()}
+
+
+async def _wait_done(page, hints: dict, timeout_s: float) -> dict[str, str]:
+    """Wait for Simplify to finish the page: its own status when the bridge answers,
+    otherwise (or as well) until the form stops changing with the button idle."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    status = await fill_status(page)                # None: no bridge, the button and the form decide
+    while status is not None and status not in FILL_DONE and loop.time() < deadline:
+        status = await fill_status(page, wait_s=min(5.0, max(0.0, deadline - loop.time())))
+    if status in FILL_DONE:
+        log.debug("Simplify reports %s", status)
+    left = max(5.0, deadline - loop.time())
+    return await wait_stable(page, hints, quiet_s=1.5, timeout_s=left, busy=lambda: _busy(page))
 
 
 async def _wait_enabled(page, timeout_s: float) -> bool:
