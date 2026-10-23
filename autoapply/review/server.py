@@ -324,6 +324,26 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         sess.manual += 1
         return _back(lane if lane in LANES else STUCK, "Recorded as submitted by hand.")
 
+    async def _refill(keys: list[str]) -> int:
+        for k in keys:
+            tab, _ = ctx.take_tab(k)
+            if tab is not None and not tab.is_closed():
+                await tab.close()
+        return len(ctx.ledger.requeue_keys(keys))
+
+    @app.post("/app/{app_id}/retry")
+    async def retry(app_id: int, csrf: str = Form("")):
+        """Fill this one again from scratch on the next run (after you fixed the cause)."""
+        check_csrf(csrf)
+        n = await _refill([_key(app_id)])
+        return _back(STUCK, "It will be filled again on the next `autoapply run`." if n else "Nothing to fill again.")
+
+    @app.post("/retry-stuck")
+    async def retry_all(csrf: str = Form("")):
+        check_csrf(csrf)
+        n = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(STUCK)])
+        return _back(STUCK, f"{n} application(s) will be filled again on the next `autoapply run --review`.")
+
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):
         check_csrf(csrf)

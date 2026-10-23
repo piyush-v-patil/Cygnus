@@ -377,14 +377,22 @@ class Ledger:
         lanes = [l for l in lanes if l in LANES or l == WOULD_SUBMIT]
         if not lanes:
             return []
-        keys = [r.posting_key for r in self.postings_in(lanes)]
+        return self.requeue_keys([r.posting_key for r in self.postings_in(lanes)])
+
+    def requeue_keys(self, keys: Iterable[str], event: str = "requeued") -> list[str]:
+        """requeue() for chosen postings (only ones waiting in a lane or tested)."""
+        keys = [k for k in keys if (r := self.get(k)) is not None and r.state in (*LANES, WOULD_SUBMIT)]
         with self.tx():
             for k in keys:
                 self.db.execute("UPDATE postings SET state=?, reason=NULL, error_count=0, updated_at=? "
                                 "WHERE posting_key=?", (SCORED, now_iso(), k))
                 self.db.execute("DELETE FROM applications WHERE posting_key=?", (k,))
-                self._event(k, "requeued", None)
+                self._event(k, event, None)
         return keys
+
+    def event_count(self, key: str, event: str) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM events WHERE posting_key=? AND event=?",
+                               (key, event)).fetchone()[0]
 
     # ------------------------------------------------------------ writeback --
     def queue_writeback(self, key: str, change: dict, only_source: str) -> int:

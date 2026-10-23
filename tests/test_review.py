@@ -178,3 +178,20 @@ def test_i_submitted_it_from_ready_and_needs_input(client):
         assert client.ctx.ledger.get(key).state == SUBMITTED_MANUAL
     pend = client.ctx.ledger.pending_writebacks(client.ctx.profile.sources[0].label)
     assert [p["change"]["status"] for p in pend[-2:]] == ["applied", "applied"]
+
+
+def test_fill_again_from_the_stuck_page(client):
+    from autoapply.ledger import STUCK
+    led = client.ctx.ledger
+    for key in ("greenhouse:a:1", "greenhouse:b:2", "greenhouse:c:3"):
+        needs_input_app(client.ctx, key, key.split(":")[1])
+        led.upsert_application(key, lane=STUCK, stuck_reason="captcha: the page asks for a CAPTCHA")
+        led.set_state(key, STUCK, "captcha")
+    page = client.get("/lane/stuck").text
+    assert "Fill all again on the next run (3)" in page and page.count(">Fill again</button>") == 3
+    app_id = led.application("greenhouse:a:1")["id"]
+    r = client.post(f"/app/{app_id}/retry", data={"csrf": client.csrf})
+    assert "filled again on the next" in r.text and led.get("greenhouse:a:1").state == "scored"
+    r = client.post("/retry-stuck", data={"csrf": client.csrf})
+    assert "2 application(s) will be filled again" in r.text
+    assert {led.get(k).state for k in ("greenhouse:b:2", "greenhouse:c:3")} == {"scored"}
