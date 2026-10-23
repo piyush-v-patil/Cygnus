@@ -378,3 +378,20 @@ def test_postings_already_scored_at_a_us_person_company_are_not_filled(make_ctx)
         led.set_state(key, ENRICHED)
         led.set_state(key, SCORED)
     assert fill_candidates(ctx, None) == ["greenhouse:acme:2"]
+
+
+def test_postings_left_mid_fill_are_queued_again_by_the_next_run(make_ctx, monkeypatch):
+    import autoapply.ats as ats_pkg
+    from autoapply.ledger import ENRICHED, FILLING, SCORED
+    cl, _ = clients()
+    monkeypatch.setattr(ats_pkg, "clients", lambda http=None: cl)
+    ctx = make_ctx()
+    key = "greenhouse:acme:9"
+    ctx.ledger.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key,
+                                       "company": "Acme", "title": "SWE", "role": "software"})
+    ctx.ledger.set_state(key, ENRICHED)
+    ctx.ledger.set_state(key, SCORED)
+    ctx.ledger.set_state(key, FILLING)               # the PC was closed while this form was open
+    counts = run(ctx, no_fill=True)
+    assert counts["interrupted"] == 1 and ctx.ledger.get(key).state == SCORED
+    assert key in fill_candidates(ctx, None)
