@@ -395,3 +395,37 @@ def test_postings_left_mid_fill_are_queued_again_by_the_next_run(make_ctx, monke
     counts = run(ctx, no_fill=True)
     assert counts["interrupted"] == 1 and ctx.ledger.get(key).state == SCORED
     assert key in fill_candidates(ctx, None)
+
+
+def _stuck_posting(ctx, key, reason):
+    from autoapply.ledger import ENRICHED, FILLING, STUCK
+    led = ctx.ledger
+    led.upsert_discovered(key, {"source_name": ctx.profile.sources[0].label, "source_ref": key,
+                                "company": key, "title": "SWE", "role": "software"})
+    for st in (ENRICHED, SCORED_STATE, FILLING):
+        led.set_state(key, st)
+    led.upsert_application(key, lane=STUCK, stuck_reason=reason)
+    led.set_state(key, STUCK, reason)
+
+
+SCORED_STATE = "scored"
+
+
+def test_temporary_stuck_reasons_are_filled_again_at_most_twice(make_ctx):
+    from autoapply.pipeline import retry_stuck
+    ctx = make_ctx()
+    _stuck_posting(ctx, "greenhouse:a:1", "timed_out: no result after 420s while Simplify autofill")
+    _stuck_posting(ctx, "greenhouse:b:2", "captcha: the page asks for a CAPTCHA")
+    _stuck_posting(ctx, "greenhouse:c:3", "email_code: Enter the 8-character code")
+    _stuck_posting(ctx, "greenhouse:d:4", "submit_unconfirmed: Submit was clicked")
+    stats = RunStats()
+    assert retry_stuck(ctx, stats) == ["greenhouse:a:1"] and stats["retried"] == 1
+    assert ctx.ledger.get("greenhouse:a:1").state == "scored"
+    assert {ctx.ledger.get(k).state for k in ("greenhouse:b:2", "greenhouse:c:3", "greenhouse:d:4")} == {"stuck"}
+    for _ in range(2):                          # it keeps timing out
+        from autoapply.ledger import FILLING, STUCK
+        ctx.ledger.set_state("greenhouse:a:1", FILLING)
+        ctx.ledger.upsert_application("greenhouse:a:1", lane=STUCK, stuck_reason="timed_out: again")
+        ctx.ledger.set_state("greenhouse:a:1", STUCK, "timed_out: again")
+        retry_stuck(ctx, RunStats())
+    assert ctx.ledger.get("greenhouse:a:1").state == "stuck"            # two automatic tries, then it waits

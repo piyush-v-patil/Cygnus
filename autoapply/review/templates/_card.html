@@ -59,6 +59,7 @@
     {% elif lane == 'stuck' %}
       <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button class="primary">Open form</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/manual"><input type="hidden" name="csrf" value="{{csrf}}"><button>I submitted it</button></form>
+      <form class="inline" method="post" action="/app/{{a.id}}/retry"><input type="hidden" name="csrf" value="{{csrf}}"><button title="Fill this application again from the start on the next run">Fill again</button></form>
       <form class="inline" method="post" action="/app/{{a.id}}/giveup"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Give up</button></form>
     {% endif %}
   </div>

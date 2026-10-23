@@ -176,6 +176,33 @@ def not_targeted(ctx: Context, row) -> str | None:
     return None
 
 
+# Stuck reasons that are usually passing trouble: filled again automatically by the next run,
+# at most MAX_AUTO_RETRIES times per posting. Everything else waits for you on the Stuck page
+# (CAPTCHA, login wall, emailed code, a Submit that may have gone through, account trouble).
+AUTO_RETRY = {"timed_out", "page_load_failed", "form_not_found", "replay_mismatch", "resume_upload_failed",
+              "cover_letter_upload_failed", "simplify_not_ready", "simplify_did_not_fill", "simplify_click_failed",
+              "simplify_missing", "consistency_check", "workday_stuck_on_page", "workday_page_error",
+              "workday_too_many_pages"}
+MAX_AUTO_RETRIES = 2
+
+
+def stuck_kind(reason: str | None) -> str:
+    return (reason or "").split(":", 1)[0].strip()
+
+
+def retry_stuck(ctx: Context, stats: RunStats) -> list[str]:
+    """Queue again the Stuck applications whose trouble is usually temporary."""
+    led = ctx.ledger
+    keys = [r.posting_key for r in led.postings_in([STUCK])
+            if stuck_kind(r.reason) in AUTO_RETRY and not ctx.has_live_tab(r.posting_key)
+            and led.event_count(r.posting_key, "auto_retry") < MAX_AUTO_RETRIES]
+    done = led.requeue_keys(keys, event="auto_retry")
+    if done:
+        stats["retried"] = len(done)
+        log.info("%d Stuck application(s) will be filled again (temporary trouble last time)", len(done))
+    return done
+
+
 def release_low_fit(ctx: Context, stats: RunStats) -> None:
     """With fit.low_fit: hold, earlier low_fit skips become held again and their
     `skip` mark in job-monitor is undone (only where this tool set it)."""
@@ -311,6 +338,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
         if back:
             stats["interrupted"] = len(back)
             log.info("%d application(s) were mid-fill when the last run stopped; they are queued again", len(back))
+        retry_stuck(ctx, stats)
         sync(ctx, stats)
         release_low_fit(ctx, stats)
         enrich(ctx, stats, limit)
@@ -339,6 +367,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
 # what each run counter means, in the order a posting meets them
 RUN_LINES = [
     ("interrupted", "left mid-fill by a closed run, queued again"),
+    ("retried", "Stuck last time for a temporary reason, filled again"),
     ("new", "new jobs found in your sources"),
     ("eligible", "jobs waiting to be looked at (passed the free filters)"),
     ("filtered_out", "filtered out by the free rules"),
