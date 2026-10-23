@@ -300,15 +300,29 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         check_csrf(csrf)
         return _back(lane if lane in LANES else STUCK, await _show(_key(app_id)), app_id)
 
+    @app.post("/app/{app_id}/code")
+    async def code(app_id: int, csrf: str = Form(""), code: str = Form("")):
+        """The security code a board emailed after Submit: type it in the kept tab and submit."""
+        check_csrf(csrf)
+        key = _key(app_id)
+        from ..browser.submit import enter_code
+        async with sess.lock:
+            res = await enter_code(ctx, key, code)
+        if res["state"] == SUBMITTED:
+            sess.submitted += 1
+        p = ctx.ledger.get(key)
+        lane = STUCK if res["state"] == STUCK else READY
+        return _back(lane, f"{p.get('company')} - {p.get('title')}: {res['state']} ({res['detail']})", app_id)
+
     @app.post("/app/{app_id}/manual")
-    async def manual(app_id: int, csrf: str = Form("")):
+    async def manual(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
+        """You sent it yourself in the form's tab (e.g. after a code or check there)."""
         check_csrf(csrf)
         from ..browser.submit import mark_manual
-        async with sess.lock:
-            bs = await sess.browser()
-            await mark_manual(ctx, bs, _key(app_id))
+        async with sess.lock:                  # no browser needed: it records, and screenshots an open tab
+            await mark_manual(ctx, None, _key(app_id))
         sess.manual += 1
-        return _back(STUCK, "Recorded as submitted by hand.")
+        return _back(lane if lane in LANES else STUCK, "Recorded as submitted by hand.")
 
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):

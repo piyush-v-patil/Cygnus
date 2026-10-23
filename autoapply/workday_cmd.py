@@ -78,6 +78,23 @@ def _list(ctx) -> int:
     return 0
 
 
+async def fill_create_account(page, email: str, password: str) -> None:
+    """Workday sign-in page -> Create Account, with the user's email and password typed in.
+    The final click (and the terms box) stay with the user."""
+    from .browser import workday as wd
+    await wd.wait_state(page, 60)
+    if await wd._visible(page, wd.EMAIL_SIGN_IN):
+        await page.locator(wd.EMAIL_SIGN_IN).first.click()
+    link = page.locator('[data-automation-id="createAccountLink"]').first
+    await link.wait_for(state="visible", timeout=15000)
+    await link.click()
+    await page.locator(wd.VERIFY_PASSWORD).first.wait_for(state="visible", timeout=15000)
+    await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
+    await page.locator(wd.EMAIL).first.fill(email)
+    await page.locator(wd.PASSWORD).first.fill(password)
+    await page.locator(wd.VERIFY_PASSWORD).first.fill(password)
+
+
 def _open(ctx, company: str | None) -> int:
     if not company:
         print("Which company? e.g. `autoapply workday open nvidia` (names from `autoapply workday`).")
@@ -88,16 +105,20 @@ def _open(ctx, company: str | None) -> int:
     if key is None:
         print(f"No waiting Workday posting at {company!r}.")
         return 1
-    from .browser.simplify import extension_version
     from .cli import RunLock
     from .setup_wizard import IO, login_browser
     url = application_url(parse_key(key))
     print(f"Opening {url}")
-    if extension_version(ctx.paths.extension) is None:
-        print("(Simplify is not installed in the tool's browser; that is fine for creating the account.)")
+    email, pw = ctx.secrets.get("WORKDAY_EMAIL"), ctx.secrets.get("WORKDAY_PASSWORD")
+    if not email or not pw:
+        print("Set your Workday login first: `autoapply workday login`.")
+        return 1
     b = ctx.profile.browser
     with RunLock(ctx.paths.lock):
-        login_browser(ctx.paths, IO(), url=url, executable_path=b.executable_path, consent=b.simplify_consent,
-                      note="  In the browser window: Sign in with email -> Create Account, using your Workday\n"
-                           "  email and password. Finish any email verification Workday asks for.")
+        # without Simplify: its "Create Account & Autofill" button would make up its own password
+        login_browser(ctx.paths, IO(), url=url, executable_path=b.executable_path, extension=False,
+                      prepare=lambda page: fill_create_account(page, email, pw),
+                      note="  In the browser window, Create Account is filled in with your Workday email and\n"
+                           "  password. Tick the agreement box, click Create Account, and finish any email\n"
+                           "  verification Workday sends. Use only this password for Workday accounts.")
     return 0

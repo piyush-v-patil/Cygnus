@@ -392,7 +392,8 @@ def step_simplify(paths: Paths, io: IO) -> str:
 
 
 def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path: str | None = None,
-                  consent: str = "essentials", note: str | None = None) -> None:
+                  consent: str = "essentials", note: str | None = None, extension: bool = True,
+                  prepare=None) -> None:
     """Open the tool's own Chromium (with Simplify and its saved login) until the user presses Enter."""
     import asyncio
     from .browser.simplify import LOGIN_URL
@@ -401,15 +402,21 @@ def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path:
         from playwright.async_api import async_playwright
         ext = str(paths.extension)
         async with async_playwright() as pw:
+            kw = dict(ignore_default_args=["--disable-extensions"],
+                      args=[f"--disable-extensions-except={ext}", f"--load-extension={ext}"]) if extension else {}
             ctx = await pw.chromium.launch_persistent_context(
                 str(paths.browser_profile), headless=False, no_viewport=True,
-                executable_path=executable_path or None,
-                ignore_default_args=["--disable-extensions"],
-                args=[f"--disable-extensions-except={ext}", f"--load-extension={ext}"])
-            from .browser.launch import settle_extension
-            await settle_extension(ctx, consent)
+                executable_path=executable_path or None, **kw)
+            if extension:
+                from .browser.launch import settle_extension
+                await settle_extension(ctx, consent)
             page = await ctx.new_page()
             await page.goto(url or LOGIN_URL)
+            if prepare is not None:
+                try:
+                    await prepare(page)
+                except Exception as e:  # noqa: BLE001 - the user can still do it by hand
+                    io.say(f"  (Could not prepare the page: {type(e).__name__}; do it by hand.)")
             io.say(note or "  In the browser window: log in to Simplify and check your Simplify profile is\n"
                    "  complete (work authorization, sponsorship, demographics, salary, education,\n"
                    "  experience). Simplify's answers are what most forms get. Its 'Before you\n"

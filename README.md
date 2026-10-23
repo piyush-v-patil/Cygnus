@@ -70,8 +70,8 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 
 | Lane | What you do |
 |---|---|
-| **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. **Open form to check** shows the real application in the tool's browser, where you can change anything. Then **Approve & submit** (it sends the form as it stands) or **Reject**. *Approve all visible* still submits them one at a time. |
-| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. |
+| **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. **Open form to check** shows the real application in the tool's browser, where you can change anything. Then **Approve & submit** (it sends the form as it stands) or **Reject**. If you sent it yourself in the form's tab (after a code or a check there, say), click **I submitted it** to record it. *Approve all visible* still submits them one at a time. |
+| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. **I submitted it** records one you sent yourself. |
 | **Stuck** | A CAPTCHA, login wall, Simplify failure, failed upload, or a form that changed. **Open form** brings the tab up, or reopens it and refills it from the plan. Finish it by hand, then click **I submitted it** (a screenshot is recorded) or **Give up**. |
 | **History** | Every submitted application, with its saved copy. |
 
@@ -112,8 +112,10 @@ Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on
 2. Add `workday` to `filters.ats_allowed` in `profile.yaml`.
 3. Run as usual. A company where the sign-in fails goes to *Stuck* (`workday_sign_in_failed`), and its other postings wait.
 4. `autoapply workday` lists the companies with Workday postings waiting, and whether signing in worked.
-5. `autoapply workday open <company>` opens a posting's sign-in page, where you choose Create Account.
+5. `autoapply workday open <company>` opens that company's Create Account form with your email and password already typed in, without Simplify. Simplify's own *Create Account & Autofill* button would pick a password of its own. You tick the agreement box, click Create Account, and verify your email address if Workday asks.
 6. Then run `autoapply requeue --lane stuck` to retry.
+
+If an account was made with Simplify's button anyway, Cygnus also tries the password Simplify saved for it, and remembers which one worked for that company. If neither works, the Stuck card lists the usual causes: no account yet, Simplify's password (use *Forgot your password* and set yours), or an unverified email address.
 
 A Workday application is several pages: My Information, My Experience, Application Questions, Voluntary Disclosures and Review. On each page, Simplify fills what it knows. Cygnus then fills the rest the usual way (your saved answers, your resume, Claude) and clicks *Save and Continue*. It stops on **Review**, and Submit is clicked only after you approve.
 
@@ -121,6 +123,13 @@ A Workday application is several pages: My Information, My Experience, Applicati
 - The tab may be gone by approval time. Workday keeps the unfinished application in your account, so Cygnus reopens it and walks to Review again with your answers.
 - After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* instead of being recorded as applied.
 - A Workday form can take 5–10 minutes. `browser.workday_form_timeout_s` (900 s by default) is the limit per form.
+
+### After Submit
+
+Cygnus counts an application as sent only when the board confirms it: a confirmation page, a success message, or a confirmation address. Workday has its own check, described above.
+
+- **Security code:** Greenhouse sometimes emails an 8-character code before accepting an application. The tab stays open, the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**. A wrong code shows Greenhouse's message, and you can try again.
+- **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
 
 ### Simplify, one form at a time
 
