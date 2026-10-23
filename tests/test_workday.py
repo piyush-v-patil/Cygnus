@@ -348,8 +348,10 @@ def test_account_creation_can_be_switched_off(wctx):
 def test_workday_password_rules():
     from autoapply.browser.workday import password_problems
     assert password_problems("Correct-Horse-1!") == []
-    assert password_problems("short1!") == ["at least 8 characters"]
-    assert set(password_problems("password")) == {"a number", "a special character"}
+    assert password_problems("Short1!") == ["at least 8 characters"]
+    assert set(password_problems("password")) == {"a number", "a special character", "an uppercase letter"}
+    assert password_problems("password1!") == ["an uppercase letter"]          # Workday's case rules too
+    assert password_problems("PASSWORD1!") == ["a lowercase letter"]
 
 
 @pytest.mark.browser
@@ -415,3 +417,205 @@ def test_thank_you_text_in_a_question_page_is_not_a_confirmation():
             await b.close()
             return first, second
     assert asyncio.run(go()) == ("form", "submitted")
+
+
+BROWSER = [pytest.mark.browser, pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")]
+
+
+def _walk_with(ctx, key=WD):
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [key], RunStats(), session=bs)
+            tab = ctx.open_tabs.get(key)
+            return await tab.evaluate("() => ({clicks: window.__applyClicks || 0, resume: window.__resumeUploaded || null, "
+                                      "text: document.body.innerText})") if tab and not tab.is_closed() else {}
+    return asyncio.run(go())
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_two_steps_with_the_same_name_are_walked_through(wctx):
+    ctx = wctx(params="&dupsteps=1")
+    ctx.answers.add("Are you open to relocating to Austin?", "yes_no", "Yes")
+    seed(ctx, WD)
+    seen = _walk_with(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "ready", row.reason
+    assert "formField-salary" in seen["text"]                 # the second "Application Questions" page was saved
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_apply_without_apply_manually_stops_instead_of_clicking_forever(wctx):
+    ctx = wctx(params="&job=1&noapply=1")
+    seed(ctx, WD)
+    seen = _walk_with(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "stuck" and "workday_no_apply_manually" in row.reason, row.reason
+    assert "Autofill with Resume" in row.reason and seen["clicks"] <= 2
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_job_page_apply_manually_leads_into_the_application(wctx):
+    ctx = wctx(params="&job=1")
+    seed(ctx, WD)
+    _walk_with(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_unknown_page_is_named_not_called_closed(wctx):
+    ctx = wctx(params="&unknown=1")
+    ctx.profile.browser.page_timeout_s = 3
+    seed(ctx, WD)
+    _walk_with(ctx)
+    row = ctx.ledger.get(WD)
+    assert row.state == "stuck" and "workday_unknown_page" in row.reason and "Candidate Home" in row.reason
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_a_failed_sign_in_is_not_repeated_for_the_same_company(wctx):
+    ctx = wctx(password="Different-Password-9!")
+    ctx.profile.workday.create_accounts = False
+    seed(ctx, WD)
+    seed(ctx, WD2)
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD, WD2], RunStats(), session=bs)
+    asyncio.run(go())
+    assert ctx.ledger.get(WD).state == "stuck"
+    assert ctx.ledger.get(WD2).state == SCORED                # never tried: it waits for the fix
+    assert "filling" not in str(ctx.ledger.events(WD2))     # not even opened
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_sections_sub_menus_and_a_loose_resume_box(wctx):
+    from autoapply.browser.workday import resume
+    from autoapply.review.actions import save_answers
+    ctx = wctx(params="&sections=1&hier=1&loose=1")
+    seed(ctx, WD)
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD], RunStats(), session=bs)
+            a = ctx.ledger.application(WD)
+            missing = {m["label"].rstrip("*"): m for m in a["missing"]}
+            uploaded = await ctx.open_tabs[WD].evaluate("() => window.__resumeUploaded || null")
+            answers = {missing["Work Experience 1 › Job Title"]["key"]: "Backend Engineer",
+                       missing["Work Experience 2 › Job Title"]["key"]: "Intern",
+                       missing["How Did You Hear About Us?"]["key"]: "Job Board > LinkedIn Job Posting"}
+            save_answers(ctx.ledger, ctx.answers, WD, answers)
+            on = await resume(ctx, ctx.open_tabs[WD], WD)
+            from autoapply.browser.workday import step_name
+            return missing, uploaded, on, await step_name(ctx.open_tabs[WD])
+    missing, uploaded, on, where = asyncio.run(go())
+    assert set(missing) == {"Work Experience 1 › Job Title", "Work Experience 2 › Job Title", "How Did You Hear About Us?"}
+    assert missing["How Did You Hear About Us?"]["options"] == [
+        "Job Board > LinkedIn Job Posting", "Job Board > Indeed", "Referral > Employee Referral"]
+    assert all(m.get("no_bank") for k, m in missing.items() if k.startswith("Work Experience"))
+    assert uploaded == "backend.txt"                          # the role's resume, outside any formField block
+    assert where == "Application Questions" and not on        # past My Experience: every answer was taken
+    assert ctx.answers.lookup("Work Experience 1 › Job Title", "short_text") is None       # never banked
+    assert ctx.answers.lookup("How Did You Hear About Us?", "choice",
+                              ["Job Board > LinkedIn Job Posting", "Job Board > Indeed"]) == "Job Board > LinkedIn Job Posting"
+
+
+def test_workday_field_errors_are_read_from_input_error():
+    from playwright.async_api import async_playwright
+    from autoapply.browser.workday import banner_errors, page_errors
+    html = """<div data-automation-id="formField-q" data-aa-key="wd:q"><label>Start date*</label><input>
+      <div data-automation-id="inputError">Enter a date in the future</div></div>
+      <div data-automation-id="errorWidgetBarMessage">Errors Found: 1</div>"""
+
+    async def go():
+        async with async_playwright() as p:
+            b = await p.chromium.launch(executable_path=CHROMIUM)
+            page = await b.new_page()
+            await page.set_content(html)
+            out = await page_errors(page), await banner_errors(page)
+            await b.close()
+            return out
+    errs, banner = asyncio.run(go())
+    assert errs == {"wd:q": "Enter a date in the future"} and banner == "Errors Found: 1"
+
+
+def test_simplify_auto_submit_setting_is_turned_off():
+    from playwright.async_api import async_playwright
+    from autoapply.browser.simplify import AUTO_ADVANCE_OFF_JS
+
+    async def go():
+        async with async_playwright() as p:
+            b = await p.chromium.launch(executable_path=CHROMIUM)
+            page = await b.new_page()
+            await page.evaluate("""() => {
+              const store = {"persist:settings": JSON.stringify({settings: {autoAdvance: true, other: 1}}),
+                             "obj": {value: {settings: {autoAdvance: true}}}, "consent": {x: 1}};
+              window.__store = store;
+              window.chrome = {storage: {local: {
+                get: async () => JSON.parse(JSON.stringify(store)),
+                set: async (o) => Object.assign(store, o)}}};
+            }""")
+            first = await page.evaluate(AUTO_ADVANCE_OFF_JS)
+            again = await page.evaluate(AUTO_ADVANCE_OFF_JS)
+            store = await page.evaluate("() => window.__store")
+            await b.close()
+            return first, again, store
+    first, again, store = asyncio.run(go())
+    assert first == 2 and again == 0
+    assert json.loads(store["persist:settings"])["settings"] == {"autoAdvance": False, "other": 1}
+    assert store["obj"]["value"]["settings"]["autoAdvance"] is False and store["consent"] == {"x": 1}
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_an_old_workday_tab_is_walked_again_before_submit(wctx):
+    import time
+    from autoapply.browser.workday import resume
+    from autoapply.review.actions import save_answers
+    ctx = wctx(test_mode=False)
+    seed(ctx, WD)
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD], RunStats(), session=bs)
+            a = ctx.ledger.application(WD)
+            save_answers(ctx.ledger, ctx.answers, WD, {a["missing"][0]["key"]: "Yes"})
+            assert await resume(ctx, ctx.open_tabs[WD], WD)                 # on Review
+            ctx.tab_opened[WD] = time.monotonic() - (ctx.profile.browser.tab_max_age_min + 1) * 60
+            return await submit(ctx, bs, WD)
+    res = asyncio.run(go())
+    assert res["state"] == "ready" and "Review page is open" in res["detail"], res     # shown again, not sent
+    assert ctx.ledger.get(WD).state == "ready"
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_a_crash_after_clicking_submit_is_unconfirmed_not_failed(wctx, monkeypatch):
+    import autoapply.browser.submit as sub_mod
+    from autoapply.browser.workday import resume
+    from autoapply.review.actions import save_answers
+    ctx = wctx(test_mode=False)
+    seed(ctx, WD)
+
+    async def boom(*a, **k):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD], RunStats(), session=bs)
+            a = ctx.ledger.application(WD)
+            save_answers(ctx.ledger, ctx.answers, WD, {a["missing"][0]["key"]: "Yes"})
+            assert await resume(ctx, ctx.open_tabs[WD], WD)
+            monkeypatch.setattr(sub_mod, "click_submit", boom)
+            return await submit(ctx, bs, WD)
+    res = asyncio.run(go())
+    row = ctx.ledger.get(WD)
+    assert res["state"] == "stuck" and row.reason.startswith("submit_unconfirmed"), row.reason
+    assert ctx.ledger.submit_clicked(WD)                     # never sent again without your say-so
+    meta = (Path(ctx.ledger.application(WD)["submission_dir"]) / "meta.json")
+    assert meta.exists() and "Submit clicked" in meta.read_text()

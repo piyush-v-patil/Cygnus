@@ -82,6 +82,47 @@ async def apply_consent(context, choice: str, timeout_s: float = 10) -> bool:
     return False
 
 
+# Simplify's "Continue and submit automatically" setting (settings.autoAdvance, 3.1.10): when on,
+# Simplify clicks Continue - or Submit - 2.5 s after it fills a page, without any approval.
+# Its storage key is built by its state library, so every stored value is searched for it.
+AUTO_ADVANCE_OFF_JS = """async () => {
+  const all = await chrome.storage.local.get(null);
+  let found = 0;
+  const fix = (v) => {
+    if (Array.isArray(v)) { v.forEach(fix); return; }
+    if (v && typeof v === "object") {
+      if (v.autoAdvance === true) { v.autoAdvance = false; found += 1; }
+      Object.values(v).forEach(fix);
+    }
+  };
+  const changed = {};
+  for (const [k, v] of Object.entries(all)) {
+    const before = found;
+    if (typeof v === "string" && v.includes('"autoAdvance":true')) {
+      try { const o = JSON.parse(v); fix(o); if (found > before) changed[k] = JSON.stringify(o); } catch (e) {}
+    } else { fix(v); if (found > before) changed[k] = v; }
+  }
+  if (found) await chrome.storage.local.set(changed);
+  return found;
+}"""
+
+
+async def auto_advance_off(context) -> int:
+    """Turn Simplify's auto-continue/auto-submit off; how many settings were on. Raises
+    SimplifyError when it stays on: nothing may be submitted without your approval."""
+    workers = [w for w in context.service_workers if w.url.startswith("chrome-extension://")]
+    if not workers:
+        return 0
+    found = await workers[0].evaluate(AUTO_ADVANCE_OFF_JS)
+    if found:
+        log.warning("Simplify's 'Continue and submit automatically' was on: turned it off (the tool clicks "
+                    "Continue itself, and Submit only after you approve)")
+        if await workers[0].evaluate(AUTO_ADVANCE_OFF_JS):
+            raise SimplifyError("simplify_auto_submit", "Simplify's 'Continue and submit automatically' is on and "
+                                "could not be turned off: switch it off in Simplify's settings (`autoapply browser`)")
+    return found
+
+
 SIGNUP_KEY = "simplifySignupCredentials"   # {email, password, updatedAt}: what Simplify's
                                            # "Create Account & Autofill" made up and used (3.1.10)
 

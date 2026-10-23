@@ -334,7 +334,9 @@ def step_workday(paths: Paths, io: IO) -> bool:
     io.say("\n== Workday ==\n  Many large companies (Capital One, NVIDIA, Salesforce...) take applications on\n"
            "  Workday, which needs an account on each company's site, all with one email and\n"
            "  password. Cygnus signs in with them; where you have no account yet it creates one\n"
-           "  with them (set workday.create_accounts: false in profile.yaml to create them yourself).")
+           "  with them, ticking that company's account agreement box (set workday.create_accounts:\n"
+           "  false in profile.yaml to create them yourself). Passwords need 8+ characters with an\n"
+           "  uppercase and a lowercase letter, a number and a special character.")
     if not io.yes("Apply on Workday sites too?", True):
         return False
     have = load_secrets(paths)
@@ -344,6 +346,11 @@ def step_workday(paths: Paths, io: IO) -> bool:
     pw = io.secret("Password for your Workday accounts (typing is hidden)")
     if not email or "@" not in email or not pw:
         io.say("  Skipped - add it later with `autoapply workday login`.")
+        return False
+    from .browser.workday import password_problems
+    weak = password_problems(pw)
+    if weak:
+        io.say(f"  Workday passwords need {', '.join(weak)}. Skipped - set one with `autoapply workday login`.")
         return False
     save_secret(paths, "WORKDAY_EMAIL", email)
     save_secret(paths, "WORKDAY_PASSWORD", pw)

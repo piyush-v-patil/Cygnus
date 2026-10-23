@@ -50,7 +50,7 @@ def save_answers(led: Ledger, bank: AnswerBank, posting_key: str, answers: dict[
                  "source": "user", "required": m.get("required", True), "options": m.get("options", [])}
         plan.append(entry)
         added.setdefault(posting_key, []).append(entry)
-        if m.get("kind") != "file":
+        if m.get("kind") != "file" and not m.get("no_bank"):     # not one entry of a repeatable section
             bank.add(m["label"], m["answer_kind"], val, source="user")
             learned.append((normalize_question(m["label"]), m["answer_kind"], val))
     led.upsert_application(posting_key, fill_plan=plan, missing=still)
@@ -76,7 +76,7 @@ def propagate(led: Ledger, learned: list[tuple[str, str, str]], skip: str | None
         plan, still, changed = list(app["fill_plan"] or []), [], False
         for m in app["missing"]:
             hit = None
-            for q, kind, ans in learned:
+            for q, kind, ans in ([] if m.get("no_bank") else learned):
                 if m.get("question", normalize_question(m["label"])) == q:
                     hit = _compatible(m, kind, ans)
                     if hit is not None:

@@ -13,17 +13,19 @@ log = logging.getLogger(__name__)
 
 
 async def settle_extension(context, consent: str) -> None:
-    """Wait for Simplify's service worker, re-apply the consent choice, close its tutorial tabs.
+    """Wait for Simplify's service worker, re-apply the consent choice, keep its auto-submit
+    off, close its tutorial tabs.
 
     Simplify treats every launch as a fresh install (see simplify.apply_consent).
     """
-    from .simplify import apply_consent
+    from .simplify import apply_consent, auto_advance_off
     if not context.service_workers:
         try:
             await context.wait_for_event("serviceworker", timeout=10000)
         except Exception:  # noqa: BLE001
             log.warning("no extension service worker after 10s")
     await apply_consent(context, consent)
+    await auto_advance_off(context)
     await asyncio.sleep(0.5)
     for p in list(context.pages):
         if p.url.startswith("chrome-extension://"):

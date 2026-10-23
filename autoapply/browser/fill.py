@@ -156,6 +156,9 @@ async def correct_legal_answers(page, fields: list[Field], profile: Profile, pla
         f.filled_by_simplify = False                 # not Simplify's answer any more
         if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
+        elif f.kind == "wd_multi" and f.required and not f.options:
+            from .workday_widgets import multi_options
+            f.options = await multi_options(page, f.key)
         value = next((o for o in f.options if _yes_no(o) == exp), None) if f.options else exp.capitalize()
         if value is None:
             missing.append(_missing(f, note + " - pick the right option"))
@@ -441,6 +444,9 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
             continue
         if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
+        elif f.kind == "wd_multi" and f.required and not f.options:
+            from .workday_widgets import multi_options
+            f.options = await multi_options(page, f.key)
         # a capped option list (School: thousands) is not a complete list to match against;
         # the combobox fill types the answer and fails loudly if no option matches
         truncated = len(f.options) >= OPTION_CAP
@@ -451,7 +457,8 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
                                       f.required, f.options, evidence=prior.get("evidence"),
                                       facts_used=prior.get("facts_used") or [], claude_kind=prior.get("claude_kind")))
             continue
-        banked = ctx.answers.lookup(f.label, f.answer_kind, None if truncated else (f.options or None))
+        banked = None if f.section else ctx.answers.lookup(f.label, f.answer_kind,
+                                                           None if truncated else (f.options or None))
         if banked is not None:
             if await _try_fill(page, f, banked, missing):
                 plan.append(PlanEntry(f.key, f.label, f.kind, banked, "answer_bank", f.required, f.options))
@@ -488,9 +495,12 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
 
 
 def _missing(f: Field, reason: str) -> dict:
-    return {"key": f.key, "label": f.label, "kind": f.kind, "answer_kind": f.answer_kind,
-            "options": f.options, "required": f.required, "reason": reason,
-            "question": normalize_question(f.label)}
+    m = {"key": f.key, "label": f.label, "kind": f.kind, "answer_kind": f.answer_kind,
+         "options": f.options, "required": f.required, "reason": reason,
+         "question": normalize_question(f.label)}
+    if f.section:              # one entry of a repeatable section: this form's answer only
+        m["no_bank"] = True
+    return m
 
 
 async def _try_fill(page, f: Field, value, missing: list) -> bool:
@@ -563,6 +573,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     async def handle(bs, key):
         row = led.get(key)
         done["n"] += 1
+        if key.startswith("workday:"):
+            from .workday import account_blocked, company_of
+            if account_blocked(ctx, key):          # sign-in there failed earlier in this run
+                log.info("[%d/%d] %s - %s: waiting, signing in to %s's Workday failed", done["n"], total,
+                         row.get("company"), row.get("title"), company_of(key))
+                return
         log.info("[%d/%d] %s - %s", done["n"], total, row.get("company"), row.get("title"))
         if row.state == ERROR:
             led.set_state(key, FILLING, None, "retry")

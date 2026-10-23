@@ -18,7 +18,6 @@ log = logging.getLogger(__name__)
 
 POPUP_OPTIONS = ('[data-automation-activepopup="true"] [role="option"], [visibility="opened"] [role="option"], '
                  '[role="listbox"] [role="option"]')
-PROMPT_OPTIONS = '[data-automation-id="promptOption"], [data-automation-id="promptLeafNode"]'
 
 
 def _block(page, key: str):
@@ -94,27 +93,95 @@ async def fill_select(page, key: str, value: str) -> None:
     raise FillError(f"the dropdown did not take {value!r}")
 
 
+PROMPT_ITEM = '[data-automation-id="promptOption"]'
+SUBMENU = " > "                       # "Job Board > LinkedIn Job Posting": a choice inside a sub-menu
+
+
+async def _prompt_items(page) -> list[tuple[int, str, bool]]:
+    """(index, text, is_leaf) of the visible choices in an open search-and-pick list. A
+    choice outside a promptLeafNode is a category: clicking it opens its sub-menu."""
+    try:
+        items = await page.locator(PROMPT_ITEM).evaluate_all("""els => els.map((e, i) => ({i,
+            text: (e.getAttribute('data-automation-label') || e.innerText || '').replace(/\\s+/g, ' ').trim(),
+            leaf: !!e.closest('[data-automation-id="promptLeafNode"]'),
+            shown: e.offsetParent !== null}))""")
+    except Exception:  # noqa: BLE001 - the list re-renders while being read
+        return []
+    return [(x["i"], x["text"], x["leaf"]) for x in items if x["shown"] and x["text"]]
+
+
+async def _open_prompt(page, box, search: str = "") -> list[tuple[int, str, bool]]:
+    await box.click(timeout=8000)
+    await box.fill("")
+    if search:
+        await box.type(search[:60], delay=20)
+    await page.keyboard.press("Enter")
+    try:
+        await page.locator(PROMPT_ITEM).first.wait_for(state="visible", timeout=5000)
+    except Exception:  # noqa: BLE001
+        pass
+    await page.wait_for_timeout(400)
+    return await _prompt_items(page)
+
+
+async def _open_category(page, items, name: str) -> list[tuple[int, str, bool]]:
+    i = _best([t for _, t, _ in items], name)
+    if i is None:
+        return []
+    await page.locator(PROMPT_ITEM).nth(items[i][0]).click(timeout=4000)
+    await page.wait_for_timeout(500)
+    return await _prompt_items(page)
+
+
+async def multi_options(page, key: str, limit: int = 200, max_categories: int = 12) -> list[str]:
+    """The choices of a search-and-pick list; a choice inside a sub-menu reads
+    "Category > Choice", which fill_multi follows the same way."""
+    box = _block(page, key).locator('input[placeholder="Search"], input').first
+    out: list[str] = []
+    try:
+        top = await _open_prompt(page, box)
+        out = [t for _, t, leaf in top if leaf]
+        cats = [t for _, t, leaf in top if not leaf][:max_categories]
+        for c in cats:
+            await _close_popup(page)
+            sub = await _open_category(page, await _open_prompt(page, box), c)
+            out += [f"{c}{SUBMENU}{t}" for _, t, leaf in sub if leaf] or [c]
+            if len(out) >= limit:
+                break
+    except Exception as e:  # noqa: BLE001
+        log.debug("could not read the choices of %s: %s", key, e)
+    finally:
+        await _close_popup(page)
+    return list(dict.fromkeys(out))[:limit]
+
+
 async def fill_multi(page, key: str, value: str | list[str]) -> None:
     from .fields import FillError
     block = _block(page, key)
     wanted = value if isinstance(value, list) else [v.strip() for v in str(value).split(";") if v.strip()]
     box = block.locator('input[placeholder="Search"], input').first
     for w in wanted:
-        await box.click(timeout=8000)
-        await box.fill("")
-        await box.type(w[:60], delay=20)
-        await page.keyboard.press("Enter")
-        try:
-            await page.locator(PROMPT_OPTIONS).first.wait_for(state="visible", timeout=5000)
-        except Exception:  # noqa: BLE001
-            pass
-        await page.wait_for_timeout(500)
-        shown = await _visible_texts(page, PROMPT_OPTIONS)
-        i = _best([t for _, t in shown], w)
+        cat, _, leaf = w.rpartition(SUBMENU)
+        if cat:                                    # walk into the sub-menu, then pick the choice
+            shown = await _open_category(page, await _open_prompt(page, box), cat)
+            if not shown:
+                await _close_popup(page)
+                raise FillError(f"no {cat!r} in the list")
+        else:
+            shown = await _open_prompt(page, box, leaf)
+        i = _best([t for _, t, _ in shown], leaf)
+        if i is not None and not shown[i][2]:     # a category, not a choice: open it and look inside
+            inner = await _open_category(page, shown, shown[i][1])
+            j = _best([t for _, t, is_leaf in inner if is_leaf], leaf)
+            if j is None:
+                await _close_popup(page)
+                raise FillError(f"{shown[i][1]!r} opens a sub-menu without {leaf!r} "
+                                f"(offered: {[t for _, t, is_leaf in inner if is_leaf][:15]})")
+            shown, i = [x for x in inner if x[2]], j
         if i is None:
             await _close_popup(page)
-            raise FillError(f"no match for {w!r} in the list")
-        await page.locator(PROMPT_OPTIONS).nth(shown[i][0]).click(timeout=4000)
+            raise FillError(f"no match for {w!r} in the list (offered: {[t for _, t, _ in shown][:15]})")
+        await page.locator(PROMPT_ITEM).nth(shown[i][0]).click(timeout=4000)
         await page.wait_for_timeout(400)
         await _close_popup(page)
     chosen = await block.locator('[data-automation-id="selectedItem"]').count()

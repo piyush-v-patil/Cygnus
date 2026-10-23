@@ -34,6 +34,7 @@ class Field:
     max_length: int | None = None
     accept: str = ""
     filled_by_simplify: bool = False
+    section: str = ""             # a repeatable entry ("Work Experience 2"): its answers are never banked
 
     @property
     def empty(self) -> bool:
@@ -125,7 +126,7 @@ async def enumerate_fields(page, hints: dict | None = None) -> list[Field]:
                          required=bool(r.get("required")), options=r.get("options") or [],
                          value=r.get("value") or "", visible=bool(r.get("visible", True)),
                          input_type=r.get("input_type") or "", max_length=r.get("max_length"),
-                         accept=r.get("accept") or ""))
+                         accept=r.get("accept") or "", section=r.get("section") or ""))
     return out
 
 

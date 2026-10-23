@@ -108,7 +108,9 @@ Three things are not written back:
 
 ### Workday
 
-Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. If Workday wants the email address verified first, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
+Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. Creating an account ticks that company's account agreement box for you. If Workday wants the email address verified first, or the form shows a CAPTCHA, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
+
+Each company is tried **once** until you requeue. After a failed sign-in or account creation, the company's other postings wait without opening, because repeated failed sign-ins are how Workday accounts get locked. Saving a new login with `autoapply workday login` lets those companies be tried again. Workday passwords need 8 or more characters with an uppercase letter, a lowercase letter, a number and a special character; `workday login` checks this.
 
 1. `autoapply workday login` saves the email and password to `secrets.env`; they are hidden in logs. `autoapply setup` asks for them too.
 2. Add `workday` to `filters.ats_allowed` in `profile.yaml`.
@@ -122,8 +124,14 @@ If an account was made with Simplify's button anyway, Cygnus also tries the pass
 A Workday application is several pages: My Information, My Experience, Application Questions, Voluntary Disclosures and Review. On each page, Simplify fills what it knows. Cygnus then fills the rest the usual way (your saved answers, your resume, Claude) and clicks *Save and Continue*. It stops on **Review**, and Submit is clicked only after you approve.
 
 - A page with questions only you can answer stops there, as *Needs input*. When you answer, the tab carries on from that page, to Review or to the next questions.
+- Repeated entries (Work Experience 1, 2, …; Education; Websites) are asked as "Work Experience 2 › From". Those answers fill this form only; they are never saved to `answers.yaml` or used on other forms.
+- Pick-lists with sub-menus, such as *How did you hear about us*, offer their choices as "Job Board > LinkedIn Job Posting". Cygnus opens the sub-menu to pick it.
+- Your role's resume goes into Workday's resume upload area. If a company's pages have none, the record says no resume was attached instead of naming one.
+- Steps that share a name (two "Application Questions" pages) are told apart by their step number.
+- A job page whose Apply button offers no *Apply Manually*, a page the tool doesn't know (named in the card), or an error Workday shows outside a question goes to *Stuck* with what the page said. The walk doesn't wait out the time limit.
 - The tab may be gone by approval time. Workday keeps the unfinished application in your account, so Cygnus reopens it and walks to Review again with your answers.
-- After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* instead of being recorded as applied.
+- After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* (`submit_unconfirmed`) instead of being recorded as applied. Check the tab, then click **I submitted it** or **Not sent - Submit it again**.
+- A Workday tab older than `browser.tab_max_age_min` is reopened and walked to Review again before it can be sent, because Workday's sign-in may have run out.
 - A Workday form can take 5–10 minutes. `browser.workday_form_timeout_s` (900 s by default) is the limit per form.
 - **One Workday application at a time.** Simplify fills each new Workday page by itself and pauses while its tab is hidden ("Please stay on this Workday page"). So a Workday application keeps the front of the tool's browser from sign-in to Review, and the next one waits. Greenhouse, Ashby and Lever forms in the same run are filled first.
 
@@ -143,6 +151,8 @@ Cygnus counts an application as sent only when the board confirms it: a confirma
 - **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
 
 ### Simplify, one form at a time
+
+Simplify has a setting, *Continue and submit automatically*, that would click Continue, or Submit, by itself. Cygnus switches it off every time it starts the browser. If it can't be switched off, the run stops instead of risking an application you did not approve.
 
 Several forms are filled in parallel (`browser.parallel_tabs`), but Simplify works on one at a time. Simplify pauses while its tab is hidden, so each form comes to the front of the tool's browser for its turn. Cygnus waits for Simplify's own "finished" status. If Simplify doesn't report one, it falls back to watching the Autofill button and the form.
 

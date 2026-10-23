@@ -175,7 +175,7 @@ async def get_ready_page(ctx, bs, app: dict):
     hints = form_hints(parse_key(key).ats)
     page, age = ctx.take_tab(key)
     if hints.get("workday"):
-        return await _workday_ready_page(ctx, bs, app, page)
+        return await _workday_ready_page(ctx, bs, app, page, age)
     if page is not None:
         max_age = ctx.profile.browser.tab_max_age_min * 60
         try:
@@ -193,11 +193,15 @@ async def get_ready_page(ctx, bs, app: dict):
     return await replay(ctx, bs, app)
 
 
-async def _workday_ready_page(ctx, bs, app: dict, page):
+async def _workday_ready_page(ctx, bs, app: dict, page, age: float | None = None):
     """A Workday tab on Review: the kept tab (walked on to Review if it stopped earlier), else
-    the application reopened from the account's draft and walked again."""
+    the application reopened from the account's draft and walked again. A tab older than
+    browser.tab_max_age_min is reopened too: Workday's sign-in may have run out."""
     from . import workday
     key = app["posting_key"]
+    if page is not None and not page.is_closed() and age is not None and age > ctx.profile.browser.tab_max_age_min * 60:
+        log.info("Workday tab for %s is %d min old; reopening it", key, age // 60)
+        await page.close()
     if page is not None and not page.is_closed():
         try:
             st = await workday.state(page)
@@ -335,10 +339,9 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
         _keep_or_close(ctx, posting_key, page)
         return {"state": WOULD_SUBMIT, "detail": f"test mode: saved to {sub}"}
 
-    if not hints.get("workday"):
-        write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
-                     led.score(posting_key), {"mode": "Submit clicked - waiting for the board's confirmation"})
-        led.upsert_application(posting_key, submission_dir=str(sub))
+    write_record(sub, posting, sent, resume, generated, det.get("description_text", ""),
+                 led.score(posting_key), {"mode": "Submit clicked - waiting for the board's confirmation"})
+    led.upsert_application(posting_key, submission_dir=str(sub))
     before = await _headings(page)
     before_problem = None if hints.get("workday") else await _form_problems_after_submit(page, hints)
     try:
@@ -354,7 +357,10 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
             from .workday import banner_errors, wait_submitted
             if not await wait_submitted(page):
                 why = await banner_errors(page)
-                raise Stuck("submit_failed", f"Workday did not confirm the submission{': ' + why if why else ''}")
+                if why:
+                    raise Stuck("submit_failed", f"Workday did not take the submission: {why}")
+                raise Stuck("submit_unconfirmed", "Submit was clicked but Workday showed no confirmation. Check "
+                                                  "the open tab: if it went through, click I submitted it")
         else:
             outcome, info = await after_click(page, ref.ats, hints, before, before_problem=before_problem)
             if outcome == "code":
@@ -364,7 +370,11 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
             if outcome == "unconfirmed":
                 raise Stuck("submit_unconfirmed", "Submit was clicked but no confirmation appeared. Check the "
                                                   "open tab: if it went through, click I submitted it")
-    except Stuck as e:
+    except Exception as e:  # noqa: BLE001 - after the click nothing may pass for "not sent"
+        if not isinstance(e, Stuck):
+            log.error("submit %s: %s after clicking Submit", posting_key, type(e).__name__, exc_info=e)
+            e = Stuck("submit_unconfirmed", f"Submit was clicked, then the page failed ({type(e).__name__}). "
+                                            "Check the open tab: if it went through, click I submitted it")
         await safe_screenshot(page, sub / "after_submit.png")
         _stuck(ctx, posting_key, e, page)
         return {"state": STUCK, "detail": str(e)}
