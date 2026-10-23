@@ -15,8 +15,8 @@ from .ats.detect import parse_key
 from .context import Context
 from .filters import prefilter, us_person_company
 from .h1b import H1BIndex
-from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, RECHECKABLE, SCORED,
-                     SKIPPED, STUCK)
+from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, NEEDS_INPUT, READY,
+                     RECHECKABLE, SCORED, SKIPPED, STUCK)
 from .llm import BudgetExceeded, LLMError
 from .llm.score import PROMPT_VERSION as SCORE_VERSION
 from .llm.score import score_posting
@@ -39,6 +39,26 @@ class RunStats(Counter):
 
 
 # ------------------------------------------------------------------- sync --
+# a posting still waiting here stops when you mark it applied / skip in job-monitor, or it closes there
+TRACKER_STOPPABLE = {ENRICHED, SCORED, HELD, ERROR, READY, NEEDS_INPUT, STUCK}
+
+
+def tracker_says_stop(p) -> str | None:
+    """Why the tracker now rules this posting out (None: it does not). Marks this tool
+    wrote itself (skip by autoapply, applied via autoapply) are not the user's decision."""
+    if p.closed_at:
+        return "monitor_closed"
+    st = (p.monitor_status or "new").strip().lower()
+    if st == "new":
+        return None
+    extra = p.extra or {}
+    if st == "skip" and extra.get("skipped_by") == "autoapply":
+        return None
+    if st == "applied" and extra.get("applied_via") == "autoapply":
+        return None
+    return f"monitor_{st}"
+
+
 def sync(ctx: Context, stats: RunStats) -> None:
     """Read every source, record postings, run the free rules (§6.4)."""
     led, profile = ctx.ledger, ctx.profile
@@ -57,6 +77,12 @@ def sync(ctx: Context, stats: RunStats) -> None:
                 if led.upsert_discovered(key, fields):
                     stats["new"] += 1
                 row = led.get(key)
+                if row.state in TRACKER_STOPPABLE:
+                    why = tracker_says_stop(p)
+                    if why:
+                        led.set_state(key, CLOSED, why, "changed in the tracker")
+                        stats["tracker_closed"] += 1
+                        continue
                 recheck = (row.state, row.reason if row.state == SKIPPED else None) in RECHECKABLE
                 if row.state != DISCOVERED and not recheck:
                     continue      # §6.4.1: already terminal or in flight
@@ -368,6 +394,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
 RUN_LINES = [
     ("interrupted", "left mid-fill by a closed run, queued again"),
     ("retried", "Stuck last time for a temporary reason, filled again"),
+    ("tracker_closed", "marked applied/skip or closed in job-monitor since, dropped here"),
     ("new", "new jobs found in your sources"),
     ("eligible", "jobs waiting to be looked at (passed the free filters)"),
     ("filtered_out", "filtered out by the free rules"),

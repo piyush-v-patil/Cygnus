@@ -225,20 +225,21 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             raise HTTPException(404)
         return a["posting_key"]
 
-    async def _submit(key: str) -> str:
+    async def _submit(key: str, force: bool = False) -> str:
         from ..browser.submit import submit
         async with sess.lock:
             bs = await sess.browser()
-            res = await submit(ctx, bs, key)
+            res = await submit(ctx, bs, key, force=force)
         if res["state"] == SUBMITTED:
             sess.submitted += 1
         p = ctx.ledger.get(key)
         return f"{p.get('company')} — {p.get('title')}: {res['state']} ({res['detail']})"
 
     @app.post("/app/{app_id}/approve")
-    async def approve(app_id: int, csrf: str = Form(""), lane: str = Form(READY)):
+    async def approve(app_id: int, csrf: str = Form(""), lane: str = Form(READY), force: str = Form("")):
+        """force=1: you checked and it was not sent, so Submit may be clicked again."""
         check_csrf(csrf)
-        return _back(lane, await _submit(_key(app_id)))
+        return _back(lane if lane in LANES else READY, await _submit(_key(app_id), force=force == "1"))
 
     @app.post("/approve-all")
     async def approve_all(csrf: str = Form(""), ids: str = Form("")):
@@ -324,29 +325,40 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         sess.manual += 1
         return _back(lane if lane in LANES else STUCK, "Recorded as submitted by hand.")
 
-    async def _refill(keys: list[str]) -> int:
+    async def _refill(keys: list[str]) -> tuple[int, int]:
+        """(queued again, skipped because Submit was already clicked for them)."""
+        clicked = [k for k in keys if ctx.ledger.submit_clicked(k)]
+        keys = [k for k in keys if k not in clicked]
         for k in keys:
             tab, _ = ctx.take_tab(k)
             if tab is not None and not tab.is_closed():
                 await tab.close()
-        return len(ctx.ledger.requeue_keys(keys))
+        return len(ctx.ledger.requeue_keys(keys)), len(clicked)
+
+    def _refill_msg(n: int, skipped: int, one: bool = False) -> str:
+        msg = (("It will be filled again on the next `autoapply run`." if n else "") if one else
+               f"{n} application(s) will be filled again on the next `autoapply run --review`.")
+        if skipped:
+            msg += (f" {skipped} not filled again: Submit was already clicked for "
+                    f"{'it' if one else 'them'}, so refilling could send it twice. Check, then use "
+                    "I submitted it or Submit it again.")
+        return msg.strip() or "Nothing to fill again."
 
     @app.post("/app/{app_id}/retry")
     async def retry(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
         """Fill this one again from scratch on the next run (after you fixed the cause, or saved
         answers that cover its questions)."""
         check_csrf(csrf)
-        n = await _refill([_key(app_id)])
-        return _back(lane if lane in LANES else STUCK,
-                     "It will be filled again on the next `autoapply run`." if n else "Nothing to fill again.")
+        n, skipped = await _refill([_key(app_id)])
+        return _back(lane if lane in LANES else STUCK, _refill_msg(n, skipped, one=True))
 
     @app.post("/retry-lane/{lane}")
     async def retry_all(lane: str, csrf: str = Form("")):
         check_csrf(csrf)
         if lane not in (STUCK, NEEDS_INPUT):
             raise HTTPException(404)
-        n = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(lane)])
-        return _back(lane, f"{n} application(s) will be filled again on the next `autoapply run --review`.")
+        n, skipped = await _refill([a["posting_key"] for a in ctx.ledger.applications_in_lane(lane)])
+        return _back(lane, _refill_msg(n, skipped))
 
     @app.post("/app/{app_id}/giveup")
     async def giveup(app_id: int, csrf: str = Form("")):

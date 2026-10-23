@@ -127,6 +127,14 @@ A Workday application is several pages: My Information, My Experience, Applicati
 
 ### After Submit
 
+**Never sent twice.** Cygnus records the moment it clicks Submit, before the click. Once that is recorded, the application is never sent again unless you say so:
+
+- If Cygnus or the PC stops before the site confirms, the next run moves the card to *Stuck* (`submit_interrupted`). Check your email or the site, then click **I submitted it**, or **Not sent - Submit it again**.
+- **Fill again**, **Fill all again**, `requeue` and the automatic retries all skip applications whose Submit was clicked.
+- If the open tab already shows the site's confirmation (you sent it yourself), **Approve** records it as submitted by you instead of sending it again.
+- On Workday, if Approve has to walk the application to Review first (its tab was gone, or it stopped on an earlier page), it stops on Review for you to look at. Click Approve again to send it.
+
+
 Cygnus counts an application as sent only when the board confirms it: a confirmation page, a success message, or a confirmation address. Workday has its own check, described above.
 
 - **Security code:** Greenhouse sometimes emails an 8-character code before accepting an application. The tab stays open, the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**. A wrong code shows Greenhouse's message, and you can try again.

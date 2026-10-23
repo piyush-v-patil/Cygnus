@@ -429,3 +429,50 @@ def test_temporary_stuck_reasons_are_filled_again_at_most_twice(make_ctx):
         ctx.ledger.set_state("greenhouse:a:1", STUCK, "timed_out: again")
         retry_stuck(ctx, RunStats())
     assert ctx.ledger.get("greenhouse:a:1").state == "stuck"            # two automatic tries, then it waits
+
+
+@pytest.mark.parametrize("label,ftype,answer,ok", [
+    ("Why do you want to work at Acme?", "textarea", "I built Python services at Acme.", True),
+    ("Is there anything else you'd like to share?", "textarea", "I enjoy distributed systems.", True),
+    ("Are you legally authorized to work in the US?", "text", "Yes", False),
+    ("Explain why you will need visa sponsorship", "textarea", "Because I am on OPT.", False),
+    ("How many years of Python experience do you have?", "text", "5 years", False),
+    ("Desired salary", "text", "Competitive and negotiable.", False),
+    ("What is your GPA?", "text", "3.9", False),
+    ("Tell us about a project you are proud of", "textarea", "Yes", False),          # a bare fact as prose
+])
+def test_claude_essays_only_for_open_questions(label, ftype, answer, ok):
+    from autoapply.llm.answer import validate
+    v = validate({"kind": "essay", "answer": answer, "evidence": None, "facts_used": []},
+                 {"id": "f1", "label": label, "type": ftype, "options": []}, RES)
+    assert (v["kind"] == "essay") is ok, v
+
+
+def test_tracker_changes_after_discovery_stop_waiting_postings(make_ctx, tmp_path):
+    import json as _json
+    from autoapply.ledger import ENRICHED, READY
+    from .conftest import FIXTURES, base_profile
+    jobs = _json.loads((FIXTURES / "jobs.json").read_text())
+    path = tmp_path / "jobs.json"
+    path.write_text(_json.dumps(jobs))
+    prof = base_profile()
+    prof["sources"][0]["path"] = str(path)
+    ctx = make_ctx(prof)
+    sync(ctx, RunStats())
+    led = ctx.ledger
+    key = "greenhouse:acme:1001"
+    led.set_state(key, ENRICHED)
+    led.set_state(key, SCORED_STATE)
+    other = next(r.posting_key for r in led.postings_in(["discovered"]) if r.posting_key != key)
+    led.set_state(other, ENRICHED)
+    led.set_state(other, SCORED_STATE)
+    ref_other = led.refs_for(other)[0][1]
+    jobs["jobs"]["acme:000000000001"]["status"] = "applied"               # you applied by hand
+    jobs["jobs"]["acme:000000000002"]["status"] = "applied"
+    jobs["jobs"][ref_other].update(status="skip", skipped_by="autoapply")  # this tool's own mark
+    path.write_text(_json.dumps(jobs))
+    ctx2 = make_ctx(prof)
+    st = RunStats()
+    sync(ctx2, st)
+    assert ctx2.ledger.get(key).state == "closed" and ctx2.ledger.get(key).reason == "monitor_applied"
+    assert ctx2.ledger.get(other).state == "scored" and st["tracker_closed"] == 1

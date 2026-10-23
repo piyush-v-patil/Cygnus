@@ -71,8 +71,13 @@ class FillOutcome:
 
 # ------------------------------------------------------------ the checks --
 SPONSOR = re.compile(r"sponsor", re.I)
-FUTURE = re.compile(r"future|at any (point|time)|now or|will you (ever|now|in)", re.I)
+FUTURE = re.compile(r"future|at any (point|time)|now or|now and|\bwill you\b|\bwould you\b", re.I)
+NOW = re.compile(r"\b(currently|at this time|right now|presently|today)\b", re.I)
+# "authorized to work ... without (the need for) (employer|visa) sponsorship": a Yes means NO sponsorship
+WITHOUT = re.compile(r"\bwithout\b[^?.]{0,40}\bsponsor", re.I)
 AUTHORIZED = re.compile(r"(legally )?authori[sz]ed to work|eligible to work|work authori[sz]ation", re.I)
+UNCLEAR_NOTE = ("left as Simplify filled it: the question does not say whether it means now or in the future, "
+                "and your visa answers differ (no sponsorship needed now, needed later)")
 
 
 def _yes_no(v: str) -> str | None:
@@ -84,15 +89,43 @@ def _yes_no(v: str) -> str | None:
     return None
 
 
-def expected_legal_answer(label: str, profile: Profile) -> str | None:
-    """What the user's confirmed visa answers say this yes/no question must be."""
+def legal_answer(label: str, profile: Profile) -> tuple[str | None, bool]:
+    """(the yes/no answer your confirmed visa answers give, whether the question is clear).
+
+    Sponsorship questions are read for their time frame (now or in the future) and for
+    negation ("authorized to work without sponsorship" asks the opposite). When the
+    question names no time and your answers for now and later differ (OPT), it is unclear:
+    the answer is not changed, only flagged for you.
+    """
     v = profile.visa
+    needs_now = v.status == "needs_sponsorship_now"
+    needs_later = needs_now or (v.status != "citizen_gc" and v.needs_sponsorship_future)
     if SPONSOR.search(label):
-        needs_now = v.status == "needs_sponsorship_now"
-        needs_future = needs_now or (v.status != "citizen_gc" and v.needs_sponsorship_future)
-        return "yes" if (needs_future if FUTURE.search(label) else needs_now) else "no"
+        if FUTURE.search(label):
+            needs, clear = needs_later, True
+        elif NOW.search(label):
+            needs, clear = needs_now, True
+        else:
+            needs, clear = needs_later, needs_now == needs_later
+        if WITHOUT.search(label):
+            return ("no" if needs else "yes"), clear
+        return ("yes" if needs else "no"), clear
     if AUTHORIZED.search(label):
-        return "no" if v.status == "needs_sponsorship_now" else "yes"
+        return ("no" if needs_now else "yes"), True
+    return None, False
+
+
+def expected_legal_answer(label: str, profile: Profile) -> str | None:
+    """What the user's confirmed visa answers say this yes/no question must be (clear questions only)."""
+    ans, clear = legal_answer(label, profile)
+    return ans if clear else None
+
+
+def legal_note(f: Field, profile: Profile) -> str | None:
+    """A ⚠ note for a filled sponsorship answer the tool cannot judge (see legal_answer)."""
+    ans, clear = legal_answer(f.label, profile)
+    if ans and not clear and _yes_no(f.value):
+        return UNCLEAR_NOTE
     return None
 
 
@@ -297,7 +330,8 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
 
     for f in fields:
         if f.filled_by_simplify and f.kind != "file":
-            plan.append(PlanEntry(f.key, f.label, f.kind, f.value, "simplify", f.required, f.options))
+            plan.append(PlanEntry(f.key, f.label, f.kind, f.value, "simplify", f.required, f.options,
+                                  note=legal_note(f, profile)))
 
     # §8.4 the one exception to "Simplify wins": the resume chosen for this job
     log.info("    Simplify filled %d field(s)", sum(f.filled_by_simplify for f in fields))

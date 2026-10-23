@@ -110,3 +110,73 @@ def test_a_form_the_browser_refuses_to_send_names_the_empty_fields(sctx, monkeyp
         c.portal.call(sess.close)
     finally:
         c.__exit__(None, None, None)
+
+
+def test_submitted_by_you_in_the_tab_is_recorded_not_sent_again(sctx):
+    ctx = sctx("ok")
+    c, sess, app_id = _serve(ctx)
+    try:
+        async def send_by_hand():
+            tab = ctx.open_tabs[GH]
+            await tab.click("#submit")
+            await tab.wait_for_selector(".confirmation__content")
+        c.portal.call(send_by_hand)
+        r = c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        assert "already shows the confirmation" in r.text, r.text[:1500]
+        assert ctx.ledger.get(GH).state == "submitted_manual"
+        assert not ctx.ledger.submit_clicked(GH)                 # Cygnus never clicked Submit
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_a_click_that_was_never_confirmed_is_not_resent_without_you(sctx, monkeypatch):
+    monkeypatch.setattr(submit_mod, "SUBMIT_WAIT_S", 2.0)
+    ctx = sctx("silent")
+    c, sess, app_id = _serve(ctx)
+    led = ctx.ledger
+    try:
+        c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        assert led.get(GH).state == "stuck" and led.submit_clicked(GH)
+        page = c.get("/lane/stuck").text
+        assert "Not sent - Submit it again" in page
+        r = c.post(f"/app/{app_id}/retry", data={"csrf": sess.csrf, "lane": "stuck"})
+        assert "Submit was already clicked" in r.text and led.get(GH).state == "stuck"   # Fill again refuses
+        assert led.requeue(["stuck"]) == []                                              # so does requeue
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_interrupted_between_click_and_confirmation_shows_up_in_stuck(make_ctx):
+    from autoapply.ledger import READY
+    from .test_browser import seed as gh_seed
+    ctx = make_ctx()
+    gh_seed(ctx, GH)
+    led = ctx.ledger
+    led.set_state(GH, "filling")
+    led.upsert_application(GH, lane=READY, fill_plan=[], missing=[], submit_clicked_at="2026-10-23T20:00:00Z")
+    led.set_state(GH, READY)                    # the PC went off right after Submit was clicked
+    led.recover_interrupted()
+    row = led.get(GH)
+    assert row.state == "stuck" and row.reason.startswith("submit_interrupted")
+    assert led.requeue_keys([GH]) == []
+
+
+@pytest.mark.parametrize("mode,state,reason", [
+    ("gone", "stuck", "submit_unconfirmed"),      # form vanished, nothing confirmed: not "submitted"
+    ("banner", "submitted", None),                # a notice already on the page is not the click's error
+])
+def test_only_the_boards_confirmation_counts(sctx, monkeypatch, mode, state, reason):
+    monkeypatch.setattr(submit_mod, "SUBMIT_WAIT_S", 4.0)
+    ctx = sctx(mode)
+    c, sess, app_id = _serve(ctx)
+    try:
+        c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        row = ctx.ledger.get(GH)
+        assert row.state == state, row.reason
+        if reason:
+            assert reason in row.reason
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)

@@ -186,9 +186,14 @@ def test_lost_tab_is_walked_again_from_the_start_with_the_answers_given(wctx, mo
             save_answers(ctx.ledger, ctx.answers, WD, {a["missing"][0]["key"]: "No"})
             tab, _ = ctx.take_tab(WD)
             await tab.close()                                    # the tab is gone: approval reopens it
-            return await submit(ctx, bs, WD)
-    res = asyncio.run(go())
-    assert res["state"] == "would_submit", res
+            first = await submit(ctx, bs, WD)                    # walks to Review, does not submit
+            from autoapply.browser.workday import state
+            on_review = await state(ctx.open_tabs[WD]) == "review"
+            second = await submit(ctx, bs, WD)                   # you looked; now it is sent
+            return first, on_review, second
+    first, on_review, second = asyncio.run(go())
+    assert first["state"] == "ready" and "Review page is open" in first["detail"], first
+    assert on_review and second["state"] == "would_submit", second
 
 
 @pytest.mark.browser
@@ -383,3 +388,27 @@ def test_workday_applications_run_one_at_a_time_after_single_page_forms(wctx, mo
     assert most[0] == 1                                    # never two Workday walks at once
     assert ctx.ledger.get(GH).state in ("ready", "needs_input")
     assert {ctx.ledger.get(k).state for k in (WD, other)} == {"needs_input"}
+
+
+@pytest.mark.browser
+@pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
+def test_thank_you_text_in_a_question_page_is_not_a_confirmation():
+    from playwright.async_api import async_playwright
+    from autoapply.browser.workday import state
+
+    page_html = """<div data-automation-id="applyFlowPage"><div data-automation-id="richText">Thank you for applying
+      to Acme! Please answer a few questions.</div><div data-automation-id="formField-q"><label>Why Acme?*</label>
+      <textarea></textarea></div><button data-automation-id="bottom-navigation-next-button">Save and Continue</button></div>"""
+    done_html = """<div role="dialog"><h2>Application Submitted</h2></div>"""
+
+    async def go():
+        async with async_playwright() as p:
+            b = await p.chromium.launch(executable_path=CHROMIUM)
+            page = await b.new_page()
+            await page.set_content(page_html)
+            first = await state(page)
+            await page.set_content(done_html)
+            second = await state(page)
+            await b.close()
+            return first, second
+    assert asyncio.run(go()) == ("form", "submitted")

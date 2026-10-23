@@ -99,6 +99,7 @@ class JobMonitorSource:
                 posted_at=j.get("posted_at"), first_seen=j.get("first_seen"),
                 source_name=self.name, source_ref=job_id,
                 monitor_status=j.get("status", "new"), closed_at=j.get("closed_at"),
+                extra={"skipped_by": j.get("skipped_by"), "applied_via": j.get("applied_via")},
             )
 
     def check(self) -> str:

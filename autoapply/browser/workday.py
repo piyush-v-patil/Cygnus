@@ -88,6 +88,15 @@ async def in_front(page):
             _holding_front.reset(token)
 
 
+class ReviewFirst(Exception):
+    """Approval had to walk the application to Review (tab lost, or it stopped earlier): the
+    user looks at the result first, and the next Approve submits it."""
+
+    def __init__(self, page):
+        super().__init__("walked to the Review page; check it, then approve again")
+        self.page = page
+
+
 class NeedsInputError(Exception):
     """The walk stopped on a page with questions for the user (raised during approval)."""
 
@@ -154,12 +163,18 @@ async def _visible(page, selector: str) -> bool:
 
 
 async def submitted(page) -> bool:
+    """Workday's "application received" view. A page that still has questions or a Next /
+    Submit button is not one, whatever its text says ("Thank you for applying to Acme..."
+    in an intro paragraph)."""
+    if await _visible(page, FIELD_BLOCK) or await _visible(page, NEXT) or await _visible(page, REVIEW):
+        return False
     if await _visible(page, SUCCESS):
         return True
     try:
         heads = await safe_evaluate(page, """() => [...document.querySelectorAll(
             'h1, h2, h3, [role=alert], [role=dialog], [data-automation-id=richText]')]
-            .filter(e => e.offsetParent !== null).map(e => e.innerText).join('\\n')""")
+            .filter(e => e.offsetParent !== null && !e.closest('[data-automation-id^="formField-"]'))
+            .map(e => e.innerText).join('\\n')""")
     except Exception:  # noqa: BLE001
         return False
     return bool(SUCCESS_TEXT.search(heads or ""))
@@ -482,7 +497,7 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
                track: dict | None = None) -> bool:
     """Walk the wizard from the current page. True on Review; False when a page has
     questions for the user (they are in `missing`). Plan entries are PlanEntry objects."""
-    from .fill import PlanEntry, correct_legal_answers, fill_blanks, final_check, _missing
+    from .fill import PlanEntry, correct_legal_answers, fill_blanks, final_check, legal_note, _missing
     hints = form_hints("workday")
     track = track if track is not None else {}
     timeout = ctx.profile.browser.page_timeout_s
@@ -529,7 +544,8 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
         for f in fields:
             if f.filled_by_simplify and f.kind != "file" and f.key not in planned:
                 src = "simplify" if not (before.get(f.key) or "").strip() else "workday"
-                plan.append(PlanEntry(f.key, f.label, f.kind, f.value, src, f.required, f.options))
+                plan.append(PlanEntry(f.key, f.label, f.kind, f.value, src, f.required, f.options,
+                                      note=legal_note(f, ctx.profile)))
         skip: set[str] = set()
         rf = next((f for f in fields if f.is_resume), None)
         if rf is not None and resume_path is not None:
@@ -629,8 +645,10 @@ async def replay(ctx, bs, app: dict):
                                    resume_text=ctx.resumes.text(res) if res else "",
                                    posting=dict(ctx.ledger.get(key).data),
                                    desc=(ctx.ledger.details(key) or {}).get("description_text") or "")
+        merged = merge_plan(old, [p.to_dict() for p in plan])
         if missing or not on_review:
-            raise NeedsInputError(missing, merge_plan(old, [p.to_dict() for p in plan]))
+            raise NeedsInputError(missing, merged)
+        ctx.ledger.upsert_application(key, fill_plan=merged)       # what is on Review now
         return page
     except BaseException as e:
         e.page = page

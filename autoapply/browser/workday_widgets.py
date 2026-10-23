@@ -163,10 +163,17 @@ async def fill_choice(page, key: str, kind: str, options: list[str], value: str 
         box = block.locator('input[type="checkbox"]').first
         if await box.is_checked() != want:
             await box.click(timeout=5000, force=True)
+        if await box.is_checked() != want:
+            raise FillError(f"the box did not {'tick' if want else 'untick'}")
         return
     wanted = value if isinstance(value, list) else (
         [v.strip() for v in str(value).split(";") if v.strip()] if kind == "checkbox_group" else [str(value)])
     inputs = block.locator('input[type="radio"]' if kind == "radio" else 'input[type="checkbox"]')
+    if kind == "checkbox_group":                       # exactly the wanted ones ticked
+        keep = {_best(options, w) for w in wanted}
+        for i in range(await inputs.count()):
+            if i not in keep and await inputs.nth(i).is_checked():
+                await inputs.nth(i).click(timeout=5000, force=True)
     for w in wanted:
         i = _best(options, w)
         if i is None:

@@ -80,6 +80,23 @@ NOT_OPEN = re.compile(
 TEXT_TYPES = {"text", "textarea", "email", "url", "tel", "number", ""}
 
 
+# questions that ask for a fact, not prose: never answerable as an "essay"
+FACTUAL = re.compile(
+    r"^\s*(are|do|did|does|have|has|had|will|would|can|could|is|was|were)\b|how (many|much|long|old)"
+    r"|years of|\bgpa\b|graduat|\bdegree\b|\bphone\b|e-?mail|address|\bname\b|website|linkedin|github"
+    r"|portfolio|\burl\b|\bdate\b|\bzip\b|postal|\bcity\b|\bcountry\b", re.I)
+BARE_FACT = re.compile(r"^\s*(yes|no|y|n|true|false|\d+([.,]\d+)?\+?\s*(years?|yrs?)?)\s*[.!]?\s*$", re.I)
+
+
+def essay_allowed(field: dict) -> bool:
+    """Prose from Claude is only for open questions (why us, describe a project, anything
+    else). Legal, money, logistics and factual questions need resume evidence or you."""
+    label = field.get("label") or ""
+    if NOT_OPEN.search(label) or (field.get("type") or "") not in TEXT_TYPES - {"number", "email", "url", "tel"}:
+        return False
+    return is_open_ended(field) or not FACTUAL.search(label)
+
+
 def is_open_ended(field: dict) -> bool:
     label = field.get("label") or ""
     return ((field.get("type") or "") in TEXT_TYPES and not field.get("options")
@@ -155,6 +172,8 @@ def validate(v: dict, field: dict, resume: str) -> dict:
         return to_user("checkboxes and files are never answered by Claude")
     if kind == "factual_from_resume" and not evidence_in_resume(v.get("evidence"), resume):
         return to_user("no verbatim resume evidence")
+    if kind == "essay" and not options and (not essay_allowed(field) or BARE_FACT.match(ans)):
+        return to_user("a factual question: answered only with resume evidence or by you")
     if options:
         hit = match_option(ans, options)
         if hit is None:

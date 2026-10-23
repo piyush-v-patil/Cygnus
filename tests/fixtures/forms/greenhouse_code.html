@@ -29,7 +29,15 @@ function confirmPage() {
 document.getElementById("application-form").addEventListener("submit", () => {
   if (MODE === "ok") setTimeout(confirmPage, 300);
 });
+if (MODE === "banner") {          // an error-styled notice that is there before anyone clicks
+  document.body.insertAdjacentHTML("afterbegin", '<div class="error" role="alert">We use cookies. Accept?</div>');
+}
 document.getElementById("submit").addEventListener("click", () => {
+  if (MODE === "gone") {           // the form disappears but nothing confirms it (network error page)
+    setTimeout(() => { document.getElementById("app").innerHTML = "<p>This site can't be reached</p>"; }, 300);
+    return;
+  }
+  if (MODE === "banner") { setTimeout(confirmPage, 1500); return; }
   if (MODE === "silent" || MODE === "ok") return;
   if (!asked) {
     asked = true;
