@@ -85,6 +85,9 @@ async def apply_plan(ctx, page, plan: list[dict], hints: dict, resume_path=None)
 async def replay(ctx, bs, app: dict) -> object:
     """Open a fresh tab with the plan applied. Raises Stuck with a clear reason."""
     key = app["posting_key"]
+    if parse_key(key).ats == "workday":
+        from .workday import replay as workday_replay
+        return await workday_replay(ctx, bs, app)
     hints = form_hints(parse_key(key).ats)
     plan = app.get("fill_plan") or []
     resume_path = ctx.resumes.path(app["resume_file"]) if app.get("resume_file") else None

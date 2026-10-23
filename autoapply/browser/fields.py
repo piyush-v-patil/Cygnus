@@ -11,8 +11,9 @@ from ..normalize import normalize_question
 
 log = logging.getLogger(__name__)
 ENUMERATE_JS = resources.files(__package__).joinpath("fields.js").read_text(encoding="utf-8")
+WORKDAY_JS = resources.files(__package__).joinpath("workday_fields.js").read_text(encoding="utf-8")
 
-CHOICE_KINDS = {"select", "radio", "combobox", "buttons", "checkbox_group"}
+CHOICE_KINDS = {"select", "radio", "combobox", "buttons", "checkbox_group", "wd_select", "wd_multi"}
 COVER_LETTER = ("cover letter", "coverletter", "cover_letter")
 RESUME = ("resume", "cv", "curriculum vitae")
 EEO_HINTS = ("gender", "race", "ethnicity", "hispanic", "latino", "veteran", "disability",
@@ -24,6 +25,7 @@ class Field:
     key: str
     label: str
     kind: str                 # text|textarea|select|combobox|radio|checkbox|checkbox_group|buttons|file
+                              # Workday blocks (keys "wd:..."): also wd_select|wd_multi|wd_date
     required: bool = False
     options: list[str] = field(default_factory=list)
     value: str = ""
@@ -113,7 +115,10 @@ async def safe_screenshot(page, path) -> str | None:
 
 
 async def enumerate_fields(page, hints: dict | None = None) -> list[Field]:
-    raw = await safe_evaluate(page, ENUMERATE_JS, hints or {})
+    if (hints or {}).get("workday"):
+        raw = await safe_evaluate(page, WORKDAY_JS)
+    else:
+        raw = await safe_evaluate(page, ENUMERATE_JS, hints or {})
     out = []
     for r in raw:
         out.append(Field(key=r["key"], label=r.get("label") or "", kind=r["kind"],
@@ -138,6 +143,9 @@ class FillError(Exception):
 
 async def combobox_options(page, f: Field, limit: int = 200) -> list[str]:
     """Open a custom dropdown and read its options (react-select etc.), then close it."""
+    if f.key.startswith("wd:"):
+        from .workday_widgets import select_options
+        return await select_options(page, f.key, limit)
     loc = page.locator(_sel(f.key)).first
     try:
         await loc.click(timeout=5000)
@@ -156,6 +164,14 @@ async def combobox_options(page, f: Field, limit: int = 200) -> list[str]:
 
 async def fill_field(page, f: Field, value: str | list[str], files_dir: Path | None = None) -> None:
     """Set one field to `value`. Raises FillError when the page did not take it."""
+    if f.key.startswith("wd:"):
+        from .workday_widgets import fill_wd
+        try:
+            return await fill_wd(page, f, value)
+        except FillError:
+            raise
+        except Exception as e:  # noqa: BLE001 - Playwright raises many types; all mean "did not take"
+            raise FillError(f"{f.label!r}: {type(e).__name__}: {str(e).splitlines()[0][:200]}") from e
     sel = _sel(f.key)
     loc = page.locator(sel)
     if await loc.count() == 0:

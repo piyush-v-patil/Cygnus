@@ -17,7 +17,7 @@ filters:
   roles: [software, backend, fullstack, frontend, ml-ai, data]
   location: us_or_remote             # us_or_remote | metros | remote_only
   metros: []                         # used when location: metros, e.g. [Seattle, Austin]
-  ats_allowed: [greenhouse, ashby, lever]
+  ats_allowed: [greenhouse, ashby, lever]   # add workday after `autoapply workday login`
   per_company_cap: null              # null = no cap
 
 visa:

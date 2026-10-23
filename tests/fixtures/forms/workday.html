@@ -1,0 +1,210 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Acme Careers - Workday</title>
+<style>
+  .popup { position: absolute; background: #fff; border: 1px solid #999; }
+  li[role=option], [data-automation-id=promptOption] { cursor: pointer; padding: 2px 6px; }
+</style></head>
+<body>
+<!-- A local stand-in for a Workday apply flow, built from the element ids seen on live
+     tenants (sign-in, progress bar, buttons) and Workday's formField-* question blocks. -->
+<div id="mainContent"><div data-automation-id="applyFlowPage">
+  <h2 data-automation-id="jobTitleHeading">Backend Engineer</h2>
+  <ol data-automation-id="progressBar"></ol>
+  <div id="page"></div>
+  <div data-automation-id="pageFooter"><button data-automation-id="bottom-navigation-next-button" id="next" style="display:none">Save and Continue</button></div>
+</div></div>
+<script>
+const STEPS = ["Create Account/Sign In", "My Information", "My Experience", "Application Questions",
+               "Voluntary Disclosures", "Review"];
+const PARAMS = new URLSearchParams(location.search);
+let step = 0;
+window.__submitted = false;
+const store = {};               // values kept across pages, as Workday keeps the draft
+
+function progress() {
+  const ol = document.querySelector('[data-automation-id=progressBar]');
+  ol.innerHTML = STEPS.map((s, i) => `<li data-automation-id="${i === step ? 'progressBarActiveStep' : 'progressBarInactiveStep'}">` +
+    `${i === step ? 'current step' : 'step'} ${i + 1} of ${STEPS.length} ${s}</li>`).join("");
+}
+
+function block(id, label, req, inner) {
+  return `<div data-automation-id="formField-${id}"><label>${label}${req ? '<abbr title="required">*</abbr>' : ''}</label>${inner}</div>`;
+}
+const text = (id, label, req) => block(id, label, req, `<input type="text" id="${id}" data-automation-id="${id}" ${req ? 'aria-required="true"' : ''}>`);
+const area = (id, label, req) => block(id, label, req, `<textarea id="${id}" ${req ? 'aria-required="true"' : ''}></textarea>`);
+const drop = (id, label, req, opts) => block(id, label, req,
+  `<button type="button" aria-haspopup="listbox" id="${id}" data-opts='${JSON.stringify(opts)}' ${req ? 'aria-required="true"' : ''}>Select One</button>`);
+const radios = (id, label, req, opts) => block(id, label, req,
+  `<fieldset><legend>${label}${req ? '*' : ''}</legend>` + opts.map((o, i) =>
+    `<input type="radio" name="${id}" id="${id}-${i}" value="${o}"><label for="${id}-${i}">${o}</label>`).join("") + `</fieldset>`);
+const multi = (id, label, req, opts) => block(id, label, req,
+  `<div data-automation-id="multiselectInputContainer" data-opts='${JSON.stringify(opts)}'><input placeholder="Search" id="${id}"></div>`);
+const date = (id, label, req) => block(id, label, req,
+  `<input data-automation-id="dateSectionMonth-input" ${req ? 'aria-required="true"' : ''}><input data-automation-id="dateSectionYear-input">`);
+const file = (id, label, req) => block(id, label, req,
+  `<div data-automation-id="resumeUpload"><input type="file" data-automation-id="file-upload-input-ref" id="${id}"></div>`);
+
+const PAGES = {
+  1: () => text("legalName--firstName", "Given Name(s)", true) + text("legalName--lastName", "Family Name", true)
+           + text("email", "Email Address", true)
+           + drop("countryDropdown", "Country", true, ["Canada", "United States of America"])
+           + drop("phone-device-type", "Phone Device Type", true, ["Home", "Mobile"])
+           + text("phone-number", "Phone Number", true),
+  2: () => file("resume", "Resume/CV", true) + multi("skills", "Type to Add Skills", false, ["Python", "PostgreSQL", "Go"])
+           + date("availableFrom", "Earliest start date", false),
+  3: () => drop("sponsorship", "Will you now or in the future require sponsorship for employment visa status?", true, ["Yes", "No"])
+           + area("whyAcme", "Why do you want to work at Acme?", true)
+           + radios("relocate", "Are you open to relocating to Austin?", true, ["Yes", "No"]),
+  4: () => drop("gender", "Gender", false, ["Male", "Female", "Decline to self-identify"])
+           + block("terms", "I agree to the terms", false, `<input type="checkbox" id="terms">`),
+};
+
+function render() {
+  progress();
+  const page = document.getElementById("page");
+  const next = document.getElementById("next");
+  if (step === 0) {
+    next.style.display = "none";
+    page.innerHTML = `<div data-automation-id="signInContent"><h2>Sign In</h2>
+      <button data-automation-id="SignInWithEmailButton" type="submit">Sign in with email</button></div>`;
+    page.querySelector('[data-automation-id=SignInWithEmailButton]').onclick = emailForm;
+    return;
+  }
+  if (step === STEPS.length - 1) {
+    page.innerHTML = `<div data-automation-id="applyFlowReviewPage"><h3>Review</h3>` +
+      Object.entries(store).map(([k, v]) => `<div>${k}: ${v}</div>`).join("") + `</div>`;
+    next.textContent = "Submit"; next.style.display = "";
+    return;
+  }
+  next.textContent = "Save and Continue"; next.style.display = "";
+  page.innerHTML = PAGES[step]();
+  restore();
+}
+
+function emailForm() {
+  const c = document.querySelector('[data-automation-id=signInContent]');
+  c.innerHTML = `<h2>Sign In</h2><div data-automation-id="errorSlot"></div>
+    <form data-automation-id="signInFormo" onsubmit="return false">
+    <div data-automation-id="formField-email"><label>Email Address*</label><input type="text" data-automation-id="email" aria-required="true"></div>
+    <div data-automation-id="formField-password"><label>Password*</label><input type="password" data-automation-id="password" aria-required="true"></div>
+    <div data-automation-id="noCaptchaWrapper"><div data-automation-id="click_filter" aria-label="Submit" style="position:relative"></div>
+      <button type="submit" data-automation-id="signInSubmitButton">Sign In</button></div>
+    <button data-automation-id="createAccountLink">Create Account</button>
+    <input type="text" data-automation-id="beecatcher" style="display:none"></form>`;
+  const go = () => {
+    const ok = c.querySelector('[data-automation-id=email]').value === (PARAMS.get("email") || "jane@example.com")
+      && c.querySelector('[data-automation-id=password]').value === (PARAMS.get("pw") || "Correct-Horse-1!");
+    setTimeout(() => {
+      if (ok) { step = 1; render(); return; }
+      c.querySelector('[data-automation-id=errorSlot]').innerHTML =
+        `<div data-automation-id="errorMessage">You may have entered the wrong email address or password or your account might be locked.</div>`;
+    }, 300);
+  };
+  c.querySelector('[data-automation-id=click_filter]').onclick = go;
+  c.querySelector('[data-automation-id=signInSubmitButton]').onclick = go;
+}
+
+// ---- widgets ----
+function closePopups() { document.querySelectorAll(".popup").forEach((p) => p.remove()); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePopups(); });
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest('button[aria-haspopup=listbox]');
+  if (btn) {
+    closePopups();
+    btn.setAttribute("aria-expanded", "true");
+    const pop = document.createElement("div");
+    pop.className = "popup"; pop.setAttribute("data-automation-activepopup", "true");
+    pop.innerHTML = `<ul role="listbox">` + JSON.parse(btn.dataset.opts).map((o) => `<li role="option">${o}</li>`).join("") + `</ul>`;
+    setTimeout(() => document.body.appendChild(pop), 150);
+    pop.addEventListener("click", (ev) => {
+      const li = ev.target.closest("li[role=option]");
+      if (!li) return;
+      btn.textContent = li.textContent; btn.setAttribute("aria-expanded", "false");
+      clearError(btn); closePopups();
+    });
+    return;
+  }
+});
+document.addEventListener("keydown", (e) => {
+  const box = e.target.closest && e.target.closest('[data-automation-id=multiselectInputContainer]');
+  if (!box || e.key !== "Enter") return;
+  closePopups();
+  const q = e.target.value.toLowerCase();
+  const pop = document.createElement("div");
+  pop.className = "popup";
+  pop.innerHTML = JSON.parse(box.dataset.opts).filter((o) => o.toLowerCase().includes(q))
+    .map((o) => `<div data-automation-id="promptLeafNode"><div data-automation-id="promptOption" data-automation-label="${o}">${o}</div></div>`).join("");
+  setTimeout(() => document.body.appendChild(pop), 200);
+  pop.addEventListener("click", (ev) => {
+    const o = ev.target.closest("[data-automation-id=promptOption]");
+    if (!o) return;
+    const item = document.createElement("div");
+    item.setAttribute("data-automation-id", "selectedItem"); item.title = o.dataset.automationLabel; item.textContent = o.dataset.automationLabel;
+    box.prepend(item); e.target.value = ""; closePopups();
+  });
+});
+document.addEventListener("change", (e) => {
+  if (e.target.type === "file") {
+    const up = e.target.closest('[data-automation-id=resumeUpload]');
+    up.querySelectorAll('[data-automation-id=file-upload-item]').forEach((x) => x.remove());
+    setTimeout(() => up.insertAdjacentHTML("beforeend",
+      `<div data-automation-id="file-upload-item">${e.target.files[0].name}<button data-automation-id="delete-file">x</button></div>`), 200);
+  }
+  clearError(e.target);
+});
+document.addEventListener("input", (e) => clearError(e.target));
+
+function clearError(el) {
+  const b = el.closest && el.closest('[data-automation-id^="formField-"]');
+  if (!b) return;
+  b.querySelectorAll('[data-automation-id=errorMessage]').forEach((x) => x.remove());
+  b.querySelectorAll('[aria-invalid]').forEach((x) => x.removeAttribute("aria-invalid"));
+}
+
+function valueOf(b) {
+  const f = b.querySelector('input[type=file]');
+  if (f) return b.querySelector('[data-automation-id=file-upload-item]') ? "file" : "";
+  const d = b.querySelector('button[aria-haspopup]'); if (d) return d.textContent === "Select One" ? "" : d.textContent;
+  const r = b.querySelector('input[type=radio]:checked'); if (b.querySelector('input[type=radio]')) return r ? r.value : "";
+  const m = b.querySelector('[data-automation-id=selectedItem]'); if (b.querySelector('[data-automation-id=multiselectInputContainer]')) return m ? m.title : "";
+  const c = b.querySelector('input[type=checkbox]'); if (c) return c.checked ? "yes" : "";
+  const mo = b.querySelector('[data-automation-id=dateSectionMonth-input]');
+  if (mo) { const y = b.querySelector('[data-automation-id=dateSectionYear-input]'); return mo.value && y.value ? mo.value + "/" + y.value : ""; }
+  const t = b.querySelector('textarea, input'); return t ? t.value : "";
+}
+function save() { document.querySelectorAll('[data-automation-id^="formField-"]').forEach((b) => { store[b.getAttribute("data-automation-id")] = valueOf(b); }); }
+function restore() {
+  for (const b of document.querySelectorAll('[data-automation-id^="formField-"]')) {
+    const v = store[b.getAttribute("data-automation-id")];
+    if (!v) continue;
+    const d = b.querySelector('button[aria-haspopup]'); if (d) { d.textContent = v; continue; }
+    const t = b.querySelector('textarea, input[type=text]'); if (t) t.value = v;
+  }
+}
+
+document.getElementById("next").addEventListener("click", () => {
+  if (step === STEPS.length - 1) {          // Submit on Review
+    window.__submitted = true;
+    document.getElementById("page").innerHTML = `<div role="dialog"><h2>Application Submitted</h2></div>`;
+    document.getElementById("next").style.display = "none";
+    return;
+  }
+  let bad = 0;
+  for (const b of document.querySelectorAll('[data-automation-id^="formField-"]')) {
+    const req = b.querySelector('abbr[title=required]');
+    if (req && !valueOf(b)) {
+      bad += 1;
+      if (!b.querySelector('[data-automation-id=errorMessage]')) {
+        const ctrl = b.querySelector('input, textarea, button'); if (ctrl) ctrl.setAttribute("aria-invalid", "true");
+        b.insertAdjacentHTML("beforeend", `<div data-automation-id="errorMessage">The field ${b.querySelector('label').textContent.replace('*','')} is required and must have a value.</div>`);
+      }
+    }
+  }
+  if (bad) return;
+  save();
+  setTimeout(() => { step += 1; render(); }, 300);
+});
+
+render();
+</script>
+</body></html>

@@ -290,6 +290,10 @@ def fill_candidates(ctx: Context, limit: int | None) -> list[str]:
             continue                     # filters narrowed since it was scored: not filled now
         if cap and taken[r.get("company")] >= cap:
             continue
+        if r.posting_key.startswith("workday:"):
+            from .browser.workday import account_blocked
+            if account_blocked(ctx, r.posting_key):
+                continue                 # its Workday sign-in failed; waits until the account is fixed
         taken[r.get("company")] += 1
         out.append(r.posting_key)
     return out
