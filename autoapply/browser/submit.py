@@ -88,6 +88,8 @@ async def get_ready_page(ctx, bs, app: dict):
     key = app["posting_key"]
     hints = form_hints(parse_key(key).ats)
     page, age = ctx.take_tab(key)
+    if hints.get("workday"):
+        return await _workday_ready_page(ctx, bs, app, page)
     if page is not None:
         max_age = ctx.profile.browser.tab_max_age_min * 60
         try:
@@ -100,6 +102,31 @@ async def get_ready_page(ctx, bs, app: dict):
                 log.info("kept tab for %s not usable (%s); refilling", key, "; ".join(problems))
         except Exception:  # noqa: BLE001 - a dead tab just means replay
             pass
+        if not page.is_closed():
+            await page.close()
+    return await replay(ctx, bs, app)
+
+
+async def _workday_ready_page(ctx, bs, app: dict, page):
+    """A Workday tab on Review: the kept tab (walked on to Review if it stopped earlier), else
+    the application reopened from the account's draft and walked again."""
+    from . import workday
+    key = app["posting_key"]
+    if page is not None and not page.is_closed():
+        try:
+            st = await workday.state(page)
+            if st == "review":
+                return page
+            if st == "form" and await workday.resume(ctx, page, key):
+                return page
+            if st == "form":
+                a = ctx.ledger.application(key) or {}
+                raise workday.NeedsInputError(a.get("missing") or [], a.get("fill_plan") or [])
+        except workday.NeedsInputError as e:
+            e.page = page
+            raise
+        except Exception as e:  # noqa: BLE001 - a dead tab just means reopening
+            log.info("kept Workday tab for %s not usable (%s); reopening", key, e)
         if not page.is_closed():
             await page.close()
     return await replay(ctx, bs, app)
@@ -129,17 +156,31 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         except ats.FetchError as e:
             log.warning("could not recheck %s: %s", posting_key, e)
 
+    from .workday import NeedsInputError
     try:
         page = await get_ready_page(ctx, bs, app)
     except Stuck as e:
         _stuck(ctx, posting_key, e, getattr(e, "page", None))
         return {"state": STUCK, "detail": str(e)}
+    except NeedsInputError as e:
+        led.upsert_application(posting_key, missing=e.missing, fill_plan=e.plan, lane=NEEDS_INPUT)
+        if led.get(posting_key).state != NEEDS_INPUT:
+            led.set_state(posting_key, NEEDS_INPUT, None, "Workday asked more questions")
+        if getattr(e, "page", None) is not None:
+            ctx.remember_tab(posting_key, e.page)
+        return {"state": NEEDS_INPUT, "detail": f"Workday asked {len(e.missing)} more question(s)"}
 
     posting = dict(row.data)
     sub = submission_dir(ctx.paths.submissions, posting)
     await safe_screenshot(page, sub / "form.png")
-    sent = [{"label": f.label, "value": f.value, "kind": f.kind, "required": f.required,
-             "source": _source(app, f.key)} for f in await enumerate_fields(page, hints)]
+    if hints.get("workday"):
+        # Review shows answers as text, not fields: the record is what each page was given
+        app = led.application(posting_key) or app
+        sent = [{"label": e.get("label"), "value": e.get("value"), "kind": e.get("kind"),
+                 "required": e.get("required", False), "source": e.get("source")} for e in app.get("fill_plan") or []]
+    else:
+        sent = [{"label": f.label, "value": f.value, "kind": f.kind, "required": f.required,
+                 "source": _source(app, f.key)} for f in await enumerate_fields(page, hints)]
     resume = ctx.resumes.path(app["resume_file"]) if app.get("resume_file") else None
     generated = [e["value"] for e in app.get("fill_plan") or [] if e.get("source") == "cover_letter"]
     det = led.details(posting_key) or {}
@@ -159,9 +200,15 @@ async def submit(ctx, bs, posting_key: str) -> dict:
         except Exception:  # noqa: BLE001
             pass
         await page.wait_for_timeout(2000)
-        problem = await _form_problems_after_submit(page, hints)
-        if problem:
-            raise Stuck("submit_failed", problem)
+        if hints.get("workday"):
+            from .workday import banner_errors, wait_submitted
+            if not await wait_submitted(page):
+                why = await banner_errors(page)
+                raise Stuck("submit_failed", f"Workday did not confirm the submission{': ' + why if why else ''}")
+        else:
+            problem = await _form_problems_after_submit(page, hints)
+            if problem:
+                raise Stuck("submit_failed", problem)
     except Stuck as e:
         await safe_screenshot(page, sub / "after_submit.png")
         _stuck(ctx, posting_key, e, page)

@@ -118,7 +118,7 @@ async def correct_legal_answers(page, fields: list[Field], profile: Profile, pla
     for f, exp in legal_mismatches(fields, profile):
         note = f"Simplify answered {f.value!r}; your visa answers say {exp.capitalize()}"
         f.filled_by_simplify = False                 # not Simplify's answer any more
-        if f.kind == "combobox" and not f.options:
+        if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
         value = next((o for o in f.options if _yes_no(o) == exp), None) if f.options else exp.capitalize()
         if value is None:
@@ -185,6 +185,15 @@ def simplify_turn() -> asyncio.Lock:
     if lock is None:
         lock = _simplify_locks[loop] = asyncio.Lock()
     return lock
+
+
+async def open_workday(ctx, page, posting_key: str) -> None:
+    """Open a Workday application ("Apply Manually"); the walk handles what it shows."""
+    try:
+        await page.goto(form_url(ctx, posting_key), wait_until="domcontentloaded",
+                        timeout=ctx.profile.browser.page_timeout_s * 1000)
+    except Exception as e:  # noqa: BLE001
+        raise Stuck("page_load_failed", str(e).splitlines()[0][:200]) from e
 
 
 async def run_simplify(ctx, page, hints: dict) -> None:
@@ -254,6 +263,10 @@ async def fill_one(ctx, bs, posting_key: str, check_consistency: bool = False,
     page = await bs.new_page()
     track["page"] = page
     try:
+        if hints.get("workday"):
+            from .workday import fill_application
+            return await fill_application(ctx, page, posting_key, resume_name, resume_path, resume_text,
+                                          desc, posting, check_consistency, track)
         return await _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_path,
                                    resume_text, desc, posting, check_consistency, track)
     except BaseException as e:
@@ -295,8 +308,46 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
     elif any(f.required and f.kind == "file" for f in fields):
         raise Stuck("resume_upload_failed", "no resume file field found")
 
-    blanks = [f for f in fields if f.empty and (f.visible or f.kind == "file")
-              and (rf is None or f.key != rf.key)]
+    await fill_blanks(ctx, page, fields, {rf.key} if rf is not None else set(), plan, missing, generated,
+                      posting, desc, resume_text, step)
+
+    step("checking the filled form")
+    await final_check(page, hints, plan, missing)
+
+    shot = ctx.paths.screenshots / f"{slug(posting_key, 80)}.png"
+    shot = await safe_screenshot(page, shot)
+    lane = NEEDS_INPUT if missing else READY
+    return FillOutcome(lane=lane, plan=[p.to_dict() for p in plan], missing=missing, stuck_reason=None,
+                       screenshot=shot, resume_file=resume_name, generated=generated, page=page,
+                       corrected=corrected)
+
+
+async def final_check(page, hints: dict, plan: list, missing: list) -> None:
+    """Final read: a value the page did not keep, or a required field nobody claimed, is missing."""
+    final = await enumerate_fields(page, hints)
+    by_key = {f.key: f for f in final}
+    for p in list(plan):
+        f = by_key.get(p.key)
+        if p.source in ("answer_bank", "claude", "profile", "user") and f is not None and f.empty:
+            plan.remove(p)
+            if f.required:
+                m = _missing(f, "the form did not keep the answer")
+                m["suggested"] = p.value if isinstance(p.value, str) else None
+                missing.append(m)
+    claimed = {m["key"] for m in missing} | {p.key for p in plan}
+    for f in final:
+        if f.required and f.empty and f.visible and f.key not in claimed and f.kind != "file":
+            missing.append(_missing(f, "still empty after autofill"))
+
+
+async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list, missing: list, generated: list,
+                      posting: dict, desc: str, resume_text: str, step, known: dict | None = None) -> None:
+    """Fill what Simplify left empty: answers already given for this application
+    (`known`, by question), the answer bank, a cover letter, then Claude. What none
+    of them may answer goes to `missing`."""
+    profile = ctx.profile
+    known = known or {}
+    blanks = [f for f in fields if f.empty and (f.visible or f.kind == "file") and f.key not in skip]
     to_claude: list[Field] = []
     for f in blanks:
         if f.kind == "file":
@@ -306,11 +357,18 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
             elif f.required:
                 missing.append(_missing(f, "file upload the tool cannot provide"))
             continue
-        if f.kind == "combobox" and not f.options:
+        if f.kind in ("combobox", "wd_select") and not f.options:
             f.options = await combobox_options(page, f)
         # a capped option list (School: thousands) is not a complete list to match against;
         # the combobox fill types the answer and fails loudly if no option matches
         truncated = len(f.options) >= OPTION_CAP
+        prior = known.get((normalize_question(f.label), f.kind))
+        if prior is not None and f.kind != "file":
+            if await _try_fill(page, f, prior["value"], missing):
+                plan.append(PlanEntry(f.key, f.label, f.kind, prior["value"], prior.get("source") or "user",
+                                      f.required, f.options, evidence=prior.get("evidence"),
+                                      facts_used=prior.get("facts_used") or [], claude_kind=prior.get("claude_kind")))
+            continue
         banked = ctx.answers.lookup(f.label, f.answer_kind, None if truncated else (f.options or None))
         if banked is not None:
             if await _try_fill(page, f, banked, missing):
@@ -345,29 +403,6 @@ async def _fill_on_page(ctx, page, posting_key, ref, hints, resume_name, resume_
                                       evidence=v.get("evidence"), facts_used=v.get("facts_used") or [],
                                       claude_kind=v["kind"]))
 
-    step("checking the filled form")
-    # final read: a value the page did not keep, or a required field nobody claimed, is missing
-    final = await enumerate_fields(page, hints)
-    by_key = {f.key: f for f in final}
-    for p in list(plan):
-        f = by_key.get(p.key)
-        if p.source in ("answer_bank", "claude", "profile") and f is not None and f.empty:
-            plan.remove(p)
-            if f.required:
-                m = _missing(f, "the form did not keep the answer")
-                m["suggested"] = p.value if isinstance(p.value, str) else None
-                missing.append(m)
-    claimed = {m["key"] for m in missing} | {p.key for p in plan}
-    for f in final:
-        if f.required and f.empty and f.visible and f.key not in claimed and f.kind != "file":
-            missing.append(_missing(f, "still empty after autofill"))
-
-    shot = ctx.paths.screenshots / f"{slug(posting_key, 80)}.png"
-    shot = await safe_screenshot(page, shot)
-    lane = NEEDS_INPUT if missing else READY
-    return FillOutcome(lane=lane, plan=[p.to_dict() for p in plan], missing=missing, stuck_reason=None,
-                       screenshot=shot, resume_file=resume_name, generated=generated, page=page,
-                       corrected=corrected)
 
 
 def _missing(f: Field, reason: str) -> dict:
@@ -450,7 +485,8 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             led.set_state(key, FILLING)
         page = None
         track: dict = {}
-        limit = ctx.profile.browser.form_timeout_s
+        limit = (ctx.profile.browser.workday_form_timeout_s if key.startswith("workday:")
+                 else ctx.profile.browser.form_timeout_s)
         try:
             # §15.8 asks for the check after the first autofill; it is free, so every
             # form is checked - the first one that carries the question is the first check

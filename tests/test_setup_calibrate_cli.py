@@ -91,6 +91,7 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
         "n",                    # no job-monitor
         "y", str(csv),          # csv source
         "n",                    # no discord
+        "y", "jane@example.com", "Secret-Pass-1!",   # Workday: yes, login
         "n",                    # do not download Simplify
         "70", "manual",
     ])
@@ -102,6 +103,9 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
     assert prof.fit.cutoff == 70 and prof.resumes.default == "jane.pdf"
     assert prof.sources[0].type == "csv"
     assert (paths.resumes / "jane.txt").read_text().startswith("Jane Doe")
+    assert "workday" in prof.filters.ats_allowed
+    secrets = paths.secrets.read_text()
+    assert "WORKDAY_EMAIL=jane@example.com" in secrets and "WORKDAY_PASSWORD=Secret-Pass-1!" in secrets
 
 
 def test_wizard_does_not_save_unconfirmed_visa(tmp_path, monkeypatch):
@@ -111,7 +115,7 @@ def test_wizard_does_not_save_unconfirmed_visa(tmp_path, monkeypatch):
     script = iter(["y", str(pdf), "", "", "r.pdf", "",
                    "newgrad", "software", "us_or_remote", "citizen_gc", "n", "n",   # not confirmed
                    "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
-                   "n", "n", "n", "n", "65", "manual"])
+                   "n", "n", "n", "n", "n", "65", "manual"])
     paths = Paths(tmp_path / "p")
     run_wizard(paths, IO(ask=lambda p: next(script), say=lambda s: None))
     prof = load_profile(paths)

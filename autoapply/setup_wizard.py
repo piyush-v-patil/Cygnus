@@ -52,6 +52,13 @@ class IO:
                 return v
             self.say(f"  Please type one of: {', '.join(options)}")
 
+    def secret(self, prompt: str) -> str:
+        """A prompt whose typing is not shown (tests: the scripted answers)."""
+        if self._ask is input:
+            import getpass
+            return getpass.getpass(f"{prompt}: ").strip()
+        return self._ask(f"{prompt}: ").strip()
+
     def many(self, prompt: str, options: list[str], default: list[str]) -> list[str]:
         while True:
             v = self.ask(f"{prompt} (comma-separated from: {', '.join(options)})", ", ".join(default))
@@ -319,6 +326,26 @@ def step_discord(paths: Paths, io: IO) -> bool:
     return False
 
 
+def step_workday(paths: Paths, io: IO) -> bool:
+    """Workday sites need an account per company. True when a login is saved."""
+    io.say("\n== Workday ==\n  Many large companies (Capital One, NVIDIA, Salesforce...) take applications on\n"
+           "  Workday, which needs an account on each company's site. You create those accounts\n"
+           "  yourself, all with one email and password; Cygnus signs in with them.")
+    if not io.yes("Apply on Workday sites too?", True):
+        return False
+    have = load_secrets(paths)
+    if have.get("WORKDAY_EMAIL") and have.get("WORKDAY_PASSWORD"):
+        return True
+    email = io.ask("Email for your Workday accounts")
+    pw = io.secret("Password for your Workday accounts (typing is hidden)")
+    if not email or "@" not in email or not pw:
+        io.say("  Skipped - add it later with `autoapply workday login`.")
+        return False
+    save_secret(paths, "WORKDAY_EMAIL", email)
+    save_secret(paths, "WORKDAY_PASSWORD", pw)
+    return True
+
+
 def ensure_anthropic_key(paths: Paths, io: IO) -> str | None:
     key = load_secrets(paths).get("ANTHROPIC_API_KEY")       # file or environment; never re-saved
     while not key:
@@ -365,7 +392,7 @@ def step_simplify(paths: Paths, io: IO) -> str:
 
 
 def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path: str | None = None,
-                  consent: str = "essentials") -> None:
+                  consent: str = "essentials", note: str | None = None) -> None:
     """Open the tool's own Chromium (with Simplify and its saved login) until the user presses Enter."""
     import asyncio
     from .browser.simplify import LOGIN_URL
@@ -383,7 +410,7 @@ def login_browser(paths: Paths, io: IO, url: str | None = None, executable_path:
             await settle_extension(ctx, consent)
             page = await ctx.new_page()
             await page.goto(url or LOGIN_URL)
-            io.say("  In the browser window: log in to Simplify and check your Simplify profile is\n"
+            io.say(note or "  In the browser window: log in to Simplify and check your Simplify profile is\n"
                    "  complete (work authorization, sponsorship, demographics, salary, education,\n"
                    "  experience). Simplify's answers are what most forms get. Its 'Before you\n"
                    "  autofill' data-consent card is answered for you from browser.simplify_consent.")
@@ -414,6 +441,9 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     filters, visa = step_preferences(io, draft)
     sources = step_sources(paths, io)
     discord = step_discord(paths, io)
+    if step_workday(paths, io):
+        allowed = list(filters.get("ats_allowed") or ["greenhouse", "ashby", "lever"])
+        filters["ats_allowed"] = allowed + ([] if "workday" in allowed else ["workday"])
     consent = step_simplify(paths, io)
     io.say("\n== Fit ==")
     cutoff = int(io.ask("Fit cutoff 0-100 (postings scoring lower are skipped)", "65"))

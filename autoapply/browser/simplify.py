@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 
 from .fields import read_values, safe_evaluate, wait_stable
@@ -34,6 +35,11 @@ BRIDGE_REQUEST = "__SIMPLIFY_AUTOMATION_REQUEST__"
 BRIDGE_RESPONSE = "__SIMPLIFY_AUTOMATION_RESPONSE__"
 FILL_DONE = ("filled", "error", "paused")        # final for one page
 FILL_RUNNING = ("filling", "submitting")
+# Workday "My Experience": the fill waits at "Last step! Select which skills to autofill."
+# until a panel button "Autofill N Skills" is clicked (3.1.10; no id on the button)
+SKILLS_TEXT = "Select which skills to autofill"
+SKILLS_BUTTON = re.compile(r"^\s*Autofill \d+ Skills?\s*$")
+STOP_BUTTON = '[aria-label="Stop autofill"]'
 
 
 CONSENT_KEY = "simplify_data_consent"   # chrome.storage.local, read by the "Before you autofill" card
@@ -160,10 +166,11 @@ async def _busy(page) -> bool:
     return disabled or any(t.startswith(x) for x in FILLING_TEXT)
 
 
-async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
+async def autofill(page, hints: dict, timeout_s: float = 45, require_fill: bool = True) -> dict[str, str]:
     """Click Simplify's autofill and wait until the form stops changing.
 
     Returns the field snapshot afterwards. Raises SimplifyError (-> Stuck).
+    `require_fill=False` accepts a page Simplify has nothing for (later Workday pages).
     """
     state = await panel_state(page, timeout_s=min(20, timeout_s))
     if state == "missing":
@@ -193,7 +200,7 @@ async def autofill(page, hints: dict, timeout_s: float = 45) -> dict[str, str]:
             break
         log.info("  Simplify did not start filling; clicking Autofill again (%d of 3)", attempt + 2)
     after = await _wait_done(page, hints, timeout_s)
-    if not (_filled(after) - _filled(start)) and len(_filled(start)) < 2:
+    if require_fill and not (_filled(after) - _filled(start)) and len(_filled(start)) < 2:
         raise SimplifyError("simplify_did_not_fill", "Simplify's autofill filled no field on this form")
     return after
 
@@ -209,11 +216,37 @@ async def _wait_done(page, hints: dict, timeout_s: float) -> dict[str, str]:
     deadline = loop.time() + timeout_s
     status = await fill_status(page)                # None: no bridge, the button and the form decide
     while status is not None and status not in FILL_DONE and loop.time() < deadline:
-        status = await fill_status(page, wait_s=min(5.0, max(0.0, deadline - loop.time())))
+        await answer_manual_step(page)
+        status = await fill_status(page, wait_s=min(3.0, max(0.0, deadline - loop.time())))
     if status in FILL_DONE:
         log.debug("Simplify reports %s", status)
     left = max(5.0, deadline - loop.time())
     return await wait_stable(page, hints, quiet_s=1.5, timeout_s=left, busy=lambda: _busy(page))
+
+
+async def answer_manual_step(page) -> bool:
+    """Get Simplify past a step that waits for a click (Workday skills). True if it acted."""
+    if not await _has_text(page, SKILLS_TEXT):
+        return False
+    btn = page.locator("button").filter(has_text=SKILLS_BUTTON)
+    try:
+        if await btn.count() and not await btn.first.is_disabled(timeout=1000):
+            log.info("    letting Simplify fill the skills it picked")
+            await btn.first.evaluate("el => el.click()")
+            return True
+        stop = page.locator(STOP_BUTTON)
+        if await stop.count():
+            log.info("    no skills to fill; stopping Simplify's skills step")
+            await stop.first.evaluate("el => el.click()")
+            return True
+    except Exception as e:  # noqa: BLE001 - the panel re-renders while being read
+        log.debug("skills step: %s", e)
+    return False
+
+
+async def wait_for_fill(page, hints: dict, timeout_s: float) -> dict[str, str]:
+    """Wait for a fill Simplify started by itself (its continuous multi-page mode)."""
+    return await _wait_done(page, hints, timeout_s)
 
 
 async def _wait_enabled(page, timeout_s: float) -> bool:

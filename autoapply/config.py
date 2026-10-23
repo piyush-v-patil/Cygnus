@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .normalize import normalize_question
 
 ENV_HOME = "AUTOAPPLY_HOME"
-SECRET_KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DISCORD_WEBHOOK_URL")
+SECRET_KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DISCORD_WEBHOOK_URL", "WORKDAY_EMAIL", "WORKDAY_PASSWORD")
 
 
 class ConfigError(Exception):
@@ -96,7 +96,8 @@ class FiltersCfg(_Strict):
     roles: list[str] = ["software", "backend", "fullstack", "frontend", "ml-ai", "data"]
     location: Literal["us_or_remote", "metros", "remote_only"] = "us_or_remote"
     metros: list[str] = []
-    ats_allowed: list[Literal["greenhouse", "ashby", "lever"]] = ["greenhouse", "ashby", "lever"]
+    # workday also needs WORKDAY_EMAIL / WORKDAY_PASSWORD (autoapply setup) and an account per company
+    ats_allowed: list[Literal["greenhouse", "ashby", "lever", "workday"]] = ["greenhouse", "ashby", "lever"]
     per_company_cap: int | None = None
 
 
@@ -135,6 +136,7 @@ class BrowserCfg(_Strict):
     # the tool re-applies this choice: essentials = "Essentials only", accept = "Accept"
     simplify_consent: Literal["essentials", "accept"] = "essentials"
     autofill_timeout_s: float = 45
+    workday_form_timeout_s: float = 900     # a Workday wizard has 5-7 pages
     form_timeout_s: float = 420          # one application, open to screenshot; then it goes to Stuck
     # `autoapply run --review`: filled tabs stay open for approval (beyond the cap, or older
     # than the age limit, approval refills the form from its saved plan as usual)

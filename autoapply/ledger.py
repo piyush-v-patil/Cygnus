@@ -194,7 +194,11 @@ class Ledger:
                 "ats", "board_token", "ats_job_id", "apply_url", "posted_at", "first_seen")
         with self.tx():
             if fields.get("source_ref"):
-                self.db.execute("INSERT OR IGNORE INTO posting_refs VALUES (?,?,?)",
+                # a ref recorded under a "url:" key (site not supported then) moves to the
+                # posting's real key once its site is supported (Workday, added later)
+                self.db.execute("INSERT INTO posting_refs VALUES (?,?,?) "
+                                "ON CONFLICT(source_name, source_ref) DO UPDATE SET posting_key=excluded.posting_key "
+                                "WHERE posting_refs.posting_key LIKE 'url:%' AND excluded.posting_key NOT LIKE 'url:%'",
                                 (fields["source_name"], fields["source_ref"], key))
             existing = self.get(key)
             if existing is None:

@@ -28,7 +28,7 @@ def test_gh_jid_resolved_from_companies_yaml():
 
 @pytest.mark.parametrize("url,ats", [
     ("https://www.linkedin.com/jobs/view/4473951967", "linkedin"),
-    ("https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite/job/x", "unsupported"),
+    ("https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite", "unsupported"),   # a board, not a job
     ("https://careers-amd.icims.com/jobs/1/job", "unsupported"),
 ])
 def test_detect_unsupported(url, ats):

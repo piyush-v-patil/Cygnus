@@ -3,8 +3,9 @@ from .base import AtsClient, FetchError, JobDetails
 from .detect import AtsRef, application_url, detect, normalize_url, parse_key, posting_key
 from .greenhouse import GreenhouseClient
 from .lever import LeverClient
+from .workday import WorkdayClient
 
-CLIENTS = {"greenhouse": GreenhouseClient, "lever": LeverClient, "ashby": AshbyClient}
+CLIENTS = {"greenhouse": GreenhouseClient, "lever": LeverClient, "ashby": AshbyClient, "workday": WorkdayClient}
 
 
 def clients(http=None) -> dict[str, AtsClient]:

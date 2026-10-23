@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 LANE_TITLES = {READY: "Ready", NEEDS_INPUT: "Needs input", STUCK: "Stuck"}
 SOURCE_LABEL = {"simplify": "Simplify", "answer_bank": "Saved answer", "claude": "Claude", "user": "You",
-                "profile": "Your visa answers",
+                "profile": "Your visa answers", "workday": "Workday account",
                 "resume": "Resume", "cover_letter": "Claude (cover letter)"}
 
 
@@ -153,6 +153,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         """Bring the application's tab to the front, or reopen + refill it. Returns a note."""
         from ..browser.fill import Stuck
         from ..browser.replay import replay
+        from ..browser.workday import NeedsInputError
         async with sess.lock:
             bs = await sess.browser()
             tab = ctx.open_tabs.get(key) if ctx.has_live_tab(key) else None
@@ -161,6 +162,13 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                 try:
                     tab = await replay(ctx, bs, ctx.ledger.application(key))
                     note = "Reopened and refilled the form in the tool's browser."
+                except NeedsInputError as e:
+                    tab = getattr(e, "page", None)
+                    led = ctx.ledger
+                    led.upsert_application(key, missing=e.missing, fill_plan=e.plan, lane=NEEDS_INPUT)
+                    if led.get(key).state != NEEDS_INPUT:
+                        led.set_state(key, NEEDS_INPUT, None, "Workday asked more questions")
+                    note = f"Reopened; Workday asks {len(e.missing)} more question(s) - answer them here."
                 except Stuck as e:
                     tab = getattr(e, "page", None)
                     note = f"Reopened the form; finish it by hand ({e})."
@@ -172,6 +180,23 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             if tab is not None:
                 await tab.bring_to_front()
         return note
+
+    async def _workday_on(key: str) -> str:
+        """A Workday application stops on the page with questions; once they are answered
+        the walk goes on from there in the same tab, to Review or to the next questions."""
+        from ..browser import workday
+        from ..browser.fill import Stuck
+        from ..browser.submit import _stuck
+        async with sess.lock:
+            page = ctx.open_tabs[key]
+            try:
+                if await workday.resume(ctx, page, key):
+                    return "Workday: went on to the Review page."
+                n = len((ctx.ledger.application(key) or {}).get("missing") or [])
+                return f"Workday asked {n} more question(s) on a later page; answer them here."
+            except Stuck as e:
+                _stuck(ctx, key, e, page)
+                return f"Workday stopped: {e}"
 
     async def _after_answers(key: str, res: dict, show: bool) -> str:
         """Type new answers into open tabs, optionally show this form; the flash message."""
@@ -186,6 +211,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         others = [k for k in res["ready"] if k != key]
         if others:
             msg += f" {len(others)} other application(s) moved to Ready."
+        if key.startswith("workday:") and ctx.ledger.get(key).state == READY and ctx.has_live_tab(key):
+            msg += " " + await _workday_on(key)
         if show:
             msg += " " + await _show(key)
         if ctx.ledger.get(key).state == READY:

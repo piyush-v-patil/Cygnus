@@ -123,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["install", "remove", "show"])
     a = sub.add_parser("answers", help="the answer bank")
     a.add_argument("action", choices=["list", "edit"])
+    w = sub.add_parser("workday", help="Workday accounts: the login the tool uses, and which companies need one")
+    w.add_argument("action", nargs="?", choices=["list", "login", "open"], default="list")
+    w.add_argument("company", nargs="?", help="with open: the company (tenant) whose sign-up page to open")
     return p
 
 
@@ -179,10 +182,17 @@ def _dispatch(args, paths: Paths) -> int:
             login_browser(paths, IO(), url=args.url, executable_path=exe, consent=consent)
         return 0
 
+    if args.cmd == "workday":
+        from .workday_cmd import workday_command
+        return workday_command(Context(paths), args.action, args.company)
+
     if args.cmd == "requeue":
         lanes = {"all": ["ready", "needs_input", "stuck"], "tested": ["would_submit"]}.get(args.lane, [args.lane])
         with RunLock(paths.lock):
-            keys = Context(paths).ledger.requeue(lanes)
+            ctx = Context(paths)
+            keys = ctx.ledger.requeue(lanes)
+            from .browser.workday import clear_accounts
+            clear_accounts(ctx, keys)         # a failed Workday sign-in gets another try
         print(f"{len(keys)} application(s) will be filled again on the next `autoapply run`."
               " Your saved answers are kept.")
         return 0

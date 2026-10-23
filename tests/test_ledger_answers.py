@@ -86,3 +86,14 @@ def test_html_to_text_handles_greenhouse_double_escaping():
     html = "&lt;p&gt;Build &amp;amp; ship&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Python&lt;/li&gt;&lt;/ul&gt;"
     t = html_to_text(html)
     assert "Build & ship" in t and "- Python" in t and "<" not in t
+
+
+def test_source_ref_moves_from_an_unsupported_key_to_the_supported_one(tmp_path):
+    from autoapply.ledger import Ledger
+    led = Ledger(tmp_path / "l.sqlite")
+    old, new = "url:https://acme.wd5.myworkdayjobs.com/external/job/x/swe_r1", "workday:acme@acme.wd5.myworkdayjobs.com:External/SWE_R1"
+    led.upsert_discovered(old, {"source_name": "jm", "source_ref": "j1", "company": "Acme"})
+    led.upsert_discovered(new, {"source_name": "jm", "source_ref": "j1", "company": "Acme"})
+    assert led.refs_for(new) == [("jm", "j1")] and led.refs_for(old) == []
+    led.upsert_discovered("greenhouse:acme:2", {"source_name": "jm", "source_ref": "j1", "company": "Acme"})
+    assert led.refs_for(new) == [("jm", "j1")]                     # a supported key keeps its ref

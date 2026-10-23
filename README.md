@@ -4,7 +4,7 @@ Cygnus applies to software jobs for you, and you approve every application befor
 
 1. It reads postings from your [job-monitor](https://github.com/Piyush-v-patil/job-monitor) tracker, or from a CSV of links.
 2. It drops postings with cheap rules first (tier, role, US location, H-1B record, blocker phrases). Claude then scores the rest for fit.
-3. For each good fit, it opens the Greenhouse / Ashby / Lever form in a Chromium window that has **Simplify Copilot** loaded. Simplify autofills the form, the tool swaps in the right resume, and Claude fills what Simplify left blank.
+3. For each good fit, it opens the Greenhouse / Ashby / Lever / Workday form in a Chromium window that has **Simplify Copilot** loaded. Simplify autofills the form, the tool swaps in the right resume, and Claude fills what Simplify left blank.
 4. Every filled application goes into a local **review queue**. Nothing is submitted until you click *Approve & submit*.
 5. Every posting is recorded in a ledger, so nothing is applied to twice. A copy of each submitted application is saved, and the posting is marked `applied` or `skip` back in job-monitor.
 
@@ -57,6 +57,7 @@ autoapply answers list|edit                      # your answer bank
 autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run
 autoapply requeue --lane tested                  # after testing: let test-approved jobs be applied for real
 autoapply browser [--url URL]                    # open the tool's browser (Simplify login, profile)
+autoapply workday [login | open <company>]       # Workday: the login it uses, companies that need an account
 autoapply schedule install|remove|show           # Windows Task Scheduler
 autoapply health                                 # the pre-run checks on their own
 ```
@@ -102,6 +103,24 @@ Three things are not written back:
 - A summary after every run.
 - The submitted count after each review session.
 - One alert when a health check fails.
+
+### Workday
+
+Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. **You create the accounts. Cygnus never does.** Use the same email and password everywhere. Cygnus signs in with them.
+
+1. `autoapply workday login` saves the email and password to `secrets.env`; they are hidden in logs. `autoapply setup` asks for them too.
+2. Add `workday` to `filters.ats_allowed` in `profile.yaml`.
+3. Run as usual. A company where the sign-in fails goes to *Stuck* (`workday_sign_in_failed`), and its other postings wait.
+4. `autoapply workday` lists the companies with Workday postings waiting, and whether signing in worked.
+5. `autoapply workday open <company>` opens a posting's sign-in page, where you choose Create Account.
+6. Then run `autoapply requeue --lane stuck` to retry.
+
+A Workday application is several pages: My Information, My Experience, Application Questions, Voluntary Disclosures and Review. On each page, Simplify fills what it knows. Cygnus then fills the rest the usual way (your saved answers, your resume, Claude) and clicks *Save and Continue*. It stops on **Review**, and Submit is clicked only after you approve.
+
+- A page with questions only you can answer stops there, as *Needs input*. When you answer, the tab carries on from that page, to Review or to the next questions.
+- The tab may be gone by approval time. Workday keeps the unfinished application in your account, so Cygnus reopens it and walks to Review again with your answers.
+- After Submit, Cygnus waits for Workday's "Application Submitted" confirmation. Without it, the application goes to *Stuck* instead of being recorded as applied.
+- A Workday form can take 5–10 minutes. `browser.workday_form_timeout_s` (900 s by default) is the limit per form.
 
 ### Simplify, one form at a time
 
@@ -196,6 +215,6 @@ pytest                       # unit tests + browser tests on local fixture forms
 pytest -m "not browser"      # without Chromium
 ```
 
-The browser tests use `tests/fixtures/forms/*.html`, local copies of the Greenhouse, Ashby and Lever form structures. LLM calls go through `FakeTransport`, so the tests never touch the network. A test-mode submit asserts that Submit is never clicked.
+The browser tests use `tests/fixtures/forms/*.html`, local copies of the Greenhouse, Ashby and Lever form structures, and a stand-in for a Workday apply flow (sign-in, pages, widgets, errors, Review, confirmation). LLM calls go through `FakeTransport`, so the tests never touch the network. A test-mode submit asserts that Submit is never clicked.
 
 **Terms of service.** Automating Simplify and ATS sites may conflict with their terms. You accept that risk by using this tool. LinkedIn postings are never attempted, and the tool never bypasses CAPTCHAs or creates accounts.
