@@ -95,6 +95,7 @@ function render() {
     page.innerHTML = `<div data-automation-id="signInContent"><h2>Sign In</h2>
       <button data-automation-id="SignInWithEmailButton" type="submit">Sign in with email</button></div>`;
     page.querySelector('[data-automation-id=SignInWithEmailButton]').onclick = emailForm;
+    if (PARAMS.get("createfirst")) createForm();      // ?createfirst=1: opens on Create Account (Mastercard)
     return;
   }
   if (step === STEPS.length - 1) {
@@ -168,7 +169,7 @@ function createForm() {
   };
   c.querySelector('[data-automation-id=click_filter]').onclick = go;
   c.querySelector('[data-automation-id=createAccountSubmitButton]').onclick = go;
-  c.querySelector('[data-automation-id=signInLink]').onclick = () => render();
+  c.querySelector('[data-automation-id=signInLink]').onclick = () => (PARAMS.get("createfirst") ? emailForm() : render());
 }
 
 // ---- widgets ----

@@ -619,3 +619,36 @@ def test_a_crash_after_clicking_submit_is_unconfirmed_not_failed(wctx, monkeypat
     assert ctx.ledger.submit_clicked(WD)                     # never sent again without your say-so
     meta = (Path(ctx.ledger.application(WD)["submission_dir"]) / "meta.json")
     assert meta.exists() and "Submit clicked" in meta.read_text()
+
+
+
+@BROWSER[0]
+@BROWSER[1]
+@pytest.mark.parametrize("params,expect", [("&createfirst=1", "ok"), ("&createfirst=1&noaccount=1", "created by Cygnus")])
+def test_a_site_that_opens_on_create_account(wctx, params, expect):
+    """Mastercard's Workday opens on Create Account, also after a reload (live, 2026-10-24)."""
+    from autoapply.browser.workday import accounts
+    ctx = wctx(params=params)
+    seed(ctx, WD)
+    _walk_with(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason          # signed in, walked on
+    acc = accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]
+    assert acc["status"] == "ok" and (acc.get("note") == expect or expect == "ok")
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_no_create_form_blocks_the_company_instead_of_retrying(wctx, monkeypatch):
+    import autoapply.browser.workday as wdm
+    from autoapply.browser.workday import account_blocked
+    ctx = wctx(params="&noaccount=1")
+    monkeypatch.setattr(wdm, "CREATE_LINK", '[data-automation-id="nothing-here"]')   # a form the tool cannot find
+    seed(ctx, WD)
+    seed(ctx, WD2)
+
+    async def go():
+        async with BrowserSession(ctx) as bs:
+            await fill_many(ctx, [WD, WD2], RunStats(), session=bs)
+    asyncio.run(go())
+    assert "no Create Account form" in ctx.ledger.get(WD).reason and account_blocked(ctx, WD)
+    assert ctx.ledger.get(WD2).state == SCORED                # not tried again in the same run

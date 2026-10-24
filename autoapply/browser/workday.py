@@ -325,6 +325,26 @@ def password_problems(pw: str) -> list[str]:
     return out
 
 
+async def open_create_form(page, company: str, ctx=None, posting_key: str | None = None) -> None:
+    """Show the Create Account form. Some tenants open on it (Mastercard, VERIFIED live
+    2026-10-24, also after a reload); others open on Sign In with a Create Account link,
+    sometimes behind "Sign in with email"."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 20
+    while loop.time() < deadline:
+        if await _visible(page, VERIFY_PASSWORD):
+            return
+        if await _visible(page, CREATE_LINK):
+            await page.locator(CREATE_LINK).first.click()
+        elif await _visible(page, EMAIL_SIGN_IN):
+            await page.locator(EMAIL_SIGN_IN).first.click()
+        await asyncio.sleep(1)
+    if ctx is not None:
+        set_account(ctx, posting_key, "no_account", "no Create Account form found")
+    raise _stuck("workday_sign_in_failed", f"no Create Account form on {company}'s Workday page: create the "
+                 f"account by hand (`autoapply workday open {company}`), then `autoapply requeue --lane stuck`")
+
+
 async def _click_create(page) -> None:
     overlays = page.locator(f"{CLICK_FILTER}[aria-label='Create Account']")
     target = overlays if await overlays.count() and await overlays.first.is_visible() else page.locator(CREATE_SUBMIT)
@@ -337,19 +357,13 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
     company = company_of(posting_key)
     weak = password_problems(password)
     if weak:
+        set_account(ctx, posting_key, "no_account", "your Workday password does not meet Workday's rules")
         raise _stuck("workday_sign_in_failed", f"cannot create an account at {company}: Workday passwords need "
                      f"{', '.join(weak)}. Pick a new one with `autoapply workday login`")
     log.info("    no account at %s's Workday yet: creating it with your Workday login", company)
     await page.reload(wait_until="domcontentloaded")
     await wait_state(page, ctx.profile.browser.page_timeout_s)
-    if await _visible(page, EMAIL_SIGN_IN):
-        await page.locator(EMAIL_SIGN_IN).first.click()
-    try:
-        await page.locator(CREATE_LINK).first.wait_for(state="visible", timeout=15000)
-        await page.locator(CREATE_LINK).first.click()
-        await page.locator(VERIFY_PASSWORD).first.wait_for(state="visible", timeout=15000)
-    except Exception:  # noqa: BLE001
-        raise _stuck("workday_sign_in_failed", f"no Create Account form on {company}'s Workday page") from None
+    await open_create_form(page, company, ctx, posting_key)
     await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
     from .fill import CAPTCHA_CHALLENGE
     if await _visible(page, CAPTCHA_CHALLENGE):
@@ -377,11 +391,18 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
             if not await _visible(page, VERIFY_PASSWORD):       # the form went: created
                 text = ""
                 break
+        if text and attempt and re.search(r"exist", text, re.I):
+            # an earlier click showed no error and this one hears "already exists": that earlier
+            # click made the account (some tenants show the Create Account form again afterwards)
+            log.info("    the account at %s was made by the earlier click", company)
+            text = ""
         if text is not None:
             break
         log.info("    Create Account did not respond; trying again (%d of 3)", attempt + 2)
     if text is None:
-        raise _stuck("workday_sign_in_failed", f"creating the account at {company} did not finish")
+        set_account(ctx, posting_key, "no_account", "Create Account did not respond")
+        raise _stuck("workday_sign_in_failed", f"creating the account at {company} did not finish: create it by "
+                     f"hand (`autoapply workday open {company}`), then `autoapply requeue --lane stuck`")
     if text:
         if re.search(r"verif", text, re.I):
             set_account(ctx, posting_key, "verify_email", text)
