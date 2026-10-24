@@ -100,12 +100,7 @@ async def fill_create_account(page, email: str, password: str) -> None:
     The final click (and the terms box) stay with the user."""
     from .browser import workday as wd
     await wd.wait_state(page, 60)
-    if await wd._visible(page, wd.EMAIL_SIGN_IN):
-        await page.locator(wd.EMAIL_SIGN_IN).first.click()
-    link = page.locator('[data-automation-id="createAccountLink"]').first
-    await link.wait_for(state="visible", timeout=15000)
-    await link.click()
-    await page.locator(wd.VERIFY_PASSWORD).first.wait_for(state="visible", timeout=15000)
+    await wd.open_create_form(page, "this company")
     await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
     await page.locator(wd.EMAIL).first.fill(email)
     await page.locator(wd.PASSWORD).first.fill(password)
