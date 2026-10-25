@@ -22,7 +22,7 @@ import contextlib
 import contextvars
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..ats import form_hints, parse_key
 from ..ledger import NEEDS_INPUT, READY
@@ -43,6 +43,8 @@ CLICK_FILTER = '[data-automation-id="click_filter"]'        # the overlay that t
 CREATE_LINK = '[data-automation-id="createAccountLink"]'
 CREATE_AGREE = 'input[data-automation-id="createAccountCheckbox"]'
 CREATE_SUBMIT = '[data-automation-id="createAccountSubmitButton"]'
+FORGOT_LINK = '[data-automation-id="forgotPasswordLink"]'           # VERIFIED live (Mastercard, 2026-10-24)
+RESET_BUTTON = '[data-automation-id="resetPasswordButton"]'         # on the Forgot Password form, VERIFIED
 ERROR = '[data-automation-id="errorMessage"]'
 JOB_APPLY = 'a[data-automation-id="adventureButton"]'
 APPLY_MANUALLY = '[data-automation-id="applyManually"]'
@@ -127,14 +129,24 @@ def accounts(ctx) -> dict:
     return dict(ctx.state_get(ACCOUNTS_KEY) or {})
 
 
-def set_account(ctx, posting_key: str, status: str, note: str = "", password: str | None = None) -> None:
-    """Record how signing in went; `password` says which one worked ("yours" | "simplify")."""
+def set_account(ctx, posting_key: str, status: str, note: str = "", password: str | None = None,
+                exists: bool | None = None) -> None:
+    """Record how signing in went; `password` says which one worked ("yours" | "simplify");
+    `exists`: the account is known to be there (created, or Workday said so), so it is
+    never created again - only verified or reset."""
     acc = accounts(ctx)
+    old = acc.get(account_key(posting_key), {})
     acc[account_key(posting_key)] = {"status": status, "note": note[:200],
                                      "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     if password:
         acc[account_key(posting_key)]["password"] = password
+    if exists or (exists is None and old.get("exists")):
+        acc[account_key(posting_key)]["exists"] = True
     ctx.state_set(ACCOUNTS_KEY, acc)
+
+
+def account_exists(ctx, posting_key: str) -> bool:
+    return bool(accounts(ctx).get(account_key(posting_key), {}).get("exists"))
 
 
 def account_status(ctx, posting_key: str) -> str | None:
@@ -147,9 +159,14 @@ def account_blocked(ctx, posting_key: str) -> bool:
 
 
 def clear_accounts(ctx, posting_keys) -> None:
+    """Give these companies another sign-in. An account known to exist keeps that fact, so it
+    is signed in to (or verified / reset), never created again."""
     acc = accounts(ctx)
     for k in {account_key(p) for p in posting_keys if p.startswith("workday:")}:
-        acc.pop(k, None)
+        if acc.get(k, {}).get("exists"):
+            acc[k] = {**acc[k], "status": "created", "note": "to sign in again"}
+        else:
+            acc.pop(k, None)
     ctx.state_set(ACCOUNTS_KEY, acc)
 
 
@@ -372,6 +389,7 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
                      f"(`autoapply workday open {company}`), then `autoapply requeue --lane stuck`")
     loop = asyncio.get_running_loop()
     text = None
+    started = datetime.now(timezone.utc)
     for attempt in range(3):
         await page.locator(EMAIL).first.fill(email)
         await page.locator(PASSWORD).first.fill(password)
@@ -405,10 +423,15 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
                      f"hand (`autoapply workday open {company}`), then `autoapply requeue --lane stuck`")
     if text:
         if re.search(r"verif", text, re.I):
-            set_account(ctx, posting_key, "verify_email", text)
-            raise _stuck("workday_verify_email", f"{company}: account created - verify your email first ({text})")
+            set_account(ctx, posting_key, "verify_email", text, exists=True)
+            return await recover_by_email(ctx, page, posting_key, email, password, since=started, why=text)
+        if re.search(r"exist", text, re.I):
+            # an account is there with a password that is not yours (made by hand or by
+            # Simplify's button): set yours from Workday's reset email
+            set_account(ctx, posting_key, "no_account", text, exists=True)
+            return await recover_by_email(ctx, page, posting_key, email, password, since=None, why=text)
         set_account(ctx, posting_key, "no_account", text)
-        if re.search(r"password", text, re.I) and not re.search(r"exist", text, re.I):
+        if re.search(r"password", text, re.I):
             raise _stuck("workday_sign_in_failed", f"{company} did not accept your Workday password for a new "
                          f"account ({text}). Pick one that meets its rules with `autoapply workday login`, "
                          "then `autoapply requeue --lane stuck`")
@@ -416,7 +439,7 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
                      f"{company} did not create the account ({text}). If it says the account exists, its "
                      "password is not your Workday password: use Forgot your password on the sign-in page "
                      "and set it to yours, then `autoapply requeue --lane stuck`")
-    set_account(ctx, posting_key, "created", "created by Cygnus (agreement box ticked)")
+    set_account(ctx, posting_key, "created", "created by Cygnus (agreement box ticked)", exists=True)
     if not await _visible(page, SIGN_IN):
         set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
         log.info("    created the account at %s and Workday signed you in", company)
@@ -434,11 +457,141 @@ async def create_account(ctx, page, posting_key: str, email: str, password: str)
         set_account(ctx, posting_key, "ok", "created by Cygnus", password="yours")
         log.info("    signed in to %s's new account", company)
         return
-    status = "verify_email" if re.search(r"verif", text, re.I) else "no_account"
-    set_account(ctx, posting_key, status, text)
-    raise _stuck("workday_verify_email" if status == "verify_email" else "workday_sign_in_failed",
-                 f"{company}: the account was created but signing in failed ({text}). If Workday emailed you "
-                 "a verification link, click it, then `autoapply requeue --lane stuck`")
+    # a new account that refuses its own password is waiting for its email address to be
+    # confirmed (some tenants say "wrong password" instead of "verify")
+    return await recover_by_email(ctx, page, posting_key, email, password, since=started, why=text)
+
+
+# ------------------------------------------------------- verify / reset --
+async def _mail(ctx, box, match, since: datetime, timeout_s: float, what: str) -> str | None:
+    from ..mailbox import MailError
+    try:
+        return await asyncio.to_thread(box.wait_for, match, since, timeout_s, what)
+    except MailError as e:
+        log.warning("    could not read the mailbox: %s", e)
+        return None
+
+
+async def _open_link(ctx, page, url: str):
+    """A link from an email, in a new tab of the tool's browser (where Workday's site is)."""
+    rewrite = getattr(ctx, "mail_link_rewrite", None)           # tests: the link -> a local page
+    tab = await page.context.new_page()
+    await tab.goto(rewrite(url) if rewrite else url, wait_until="domcontentloaded",
+                   timeout=ctx.profile.browser.page_timeout_s * 1000)
+    await tab.wait_for_timeout(3000)
+    return tab
+
+
+async def _sign_in_again(ctx, page, company: str, email: str, password: str) -> bool:
+    await page.reload(wait_until="domcontentloaded")
+    st = await wait_state(page, ctx.profile.browser.page_timeout_s)
+    if st != "signin":
+        return st in ("form", "review", "job", "submitted")
+    await _email_form(page, company)
+    return await _attempt(page, email, password) is None
+
+
+async def _request_reset(ctx, page, company: str, email: str) -> None:
+    """Forgot your password? on the sign-in page: Workday emails a reset link."""
+    await page.reload(wait_until="domcontentloaded")
+    await wait_state(page, ctx.profile.browser.page_timeout_s)
+    await _email_form(page, company)
+    try:
+        await page.locator(FORGOT_LINK).first.click(timeout=10000)
+        await page.locator(RESET_BUTTON).first.wait_for(state="visible", timeout=15000)
+    except Exception:  # noqa: BLE001
+        raise _stuck("workday_sign_in_failed", f"no Forgot your password form on {company}'s Workday page") from None
+    await page.wait_for_timeout(2500)              # typing before the form is wired up is dropped
+    await page.locator(EMAIL).first.fill(email)
+    target = CLICK_FILTER if await _visible(page, CLICK_FILTER) else RESET_BUTTON
+    await page.locator(target).first.click(force=True)
+    await page.wait_for_timeout(3000)
+    if await _visible(page, ERROR):
+        text = " ".join((await page.locator(ERROR).first.inner_text()).split())
+        raise _stuck("workday_sign_in_failed", f"{company} did not send a password reset email ({text})")
+    log.info("    asked %s's Workday for a password reset email", company)
+
+
+async def _set_password(ctx, link_tab, company: str, password: str) -> None:
+    """On the page the reset link opens: your Workday password, twice, and save."""
+    pw = link_tab.locator('input[type="password"]')
+    try:
+        await pw.first.wait_for(state="visible", timeout=30000)
+    except Exception:  # noqa: BLE001
+        raise _stuck("workday_sign_in_failed", f"{company}'s password reset link did not show a new-password "
+                     "form (expired?)") from None
+    await link_tab.wait_for_timeout(2500)
+    for i in range(min(await pw.count(), 3)):
+        if await pw.nth(i).is_visible():
+            await pw.nth(i).fill(password)
+    if await _visible(link_tab, CLICK_FILTER):
+        await link_tab.locator(CLICK_FILTER).first.click(force=True)
+    else:
+        await link_tab.get_by_role("button", name=re.compile(r"reset|submit|save|change|set|continue", re.I)) \
+            .first.click(timeout=10000)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 20
+    while loop.time() < deadline:
+        await asyncio.sleep(0.75)
+        if await _visible(link_tab, ERROR):
+            text = " ".join((await link_tab.locator(ERROR).first.inner_text()).split())
+            raise _stuck("workday_sign_in_failed", f"{company} did not take your Workday password as the new "
+                         f"one ({text}). Set one by hand from the reset email")
+        if not await _visible(link_tab, 'input[type="password"]'):
+            return
+    raise _stuck("workday_sign_in_failed", f"setting your password at {company} did not finish")
+
+
+async def recover_by_email(ctx, page, posting_key: str, email: str, password: str, since: datetime | None,
+                           why: str = "") -> None:
+    """The account is there but refuses your password: open Workday's verification email
+    (since `since`), else have it email a password reset and set your Workday password from
+    it, then sign in. Without mail access the reset email is sent and you finish it."""
+    from ..mailbox import workday_link
+    company = company_of(posting_key)
+    tenant, _, host = account_key(posting_key).partition("@")
+    box = ctx.mailbox
+    wait = ctx.profile.mail.wait_s
+    if box is not None and since is not None:
+        link = await _mail(ctx, box, lambda m: workday_link(m, tenant, host, "verify"), since, min(wait, 60),
+                           f"{company}'s Workday verification email")
+        if link:
+            tab = await _open_link(ctx, page, link)
+            await tab.close()
+            if await _sign_in_again(ctx, page, company, email, password):
+                set_account(ctx, posting_key, "ok", "verified by email", password="yours", exists=True)
+                log.info("    confirmed your email at %s and signed in", company)
+                return
+    if box is None and re.search(r"verif", why, re.I):
+        raise _stuck("workday_verify_email", f"{company}: verify your email first ({why}). Click the link in "
+                     "Workday's email, then click Fill again")
+    asked = datetime.now(timezone.utc)
+    await _request_reset(ctx, page, company, email)
+    if box is None:
+        set_account(ctx, posting_key, "verify_email", "reset email sent - set your password from it", exists=True)
+        ctx.notifier.warn(f"{company}'s Workday refuses your password ({why or 'sign-in failed'}). A password reset "
+                          f"email was just sent to {email}: open it, set your Workday password, then Fill again.")
+        raise _stuck("workday_reset_sent", f"{company}: Workday refuses your password ({why or 'sign-in failed'}). "
+                     f"A password reset email was just sent to {email}: open it, set your Workday password, then "
+                     "click Fill again (or `autoapply mail login` once, and Cygnus does this itself)")
+    link = await _mail(ctx, box, lambda m: workday_link(m, tenant, host, "reset"), asked - timedelta(seconds=5), wait,
+                       f"{company}'s Workday password reset email")
+    if not link:
+        set_account(ctx, posting_key, "no_account", "no password reset email arrived", exists=True)
+        raise _stuck("workday_sign_in_failed", f"{company}: no password reset email arrived in {int(wait)}s. Open it "
+                     "when it comes, set your Workday password, then click Fill again")
+    tab = await _open_link(ctx, page, link)
+    try:
+        await _set_password(ctx, tab, company, password)
+    finally:
+        await tab.close()
+    if await _sign_in_again(ctx, page, company, email, password):
+        set_account(ctx, posting_key, "ok", "password reset by email", password="yours", exists=True)
+        log.info("    set your Workday password at %s from the reset email and signed in", company)
+        return
+    set_account(ctx, posting_key, "no_account", "still refused after the password reset", exists=True)
+    raise _stuck("workday_sign_in_failed", f"{company} still refuses your password after the reset; sign in by hand "
+                 "and check the account")
 
 
 async def sign_in(ctx, page, posting_key: str) -> None:
@@ -466,8 +619,14 @@ async def sign_in(ctx, page, posting_key: str) -> None:
                      " with the password Simplify made when it created the account" if source == "simplify" else "")
             return
         if re.search(r"verif", text, re.I):
-            set_account(ctx, posting_key, "verify_email", text)
-            raise _stuck("workday_verify_email", f"{company}: verify your email first ({text})")
+            set_account(ctx, posting_key, "verify_email", text, exists=True)
+            since = datetime.now(timezone.utc) - timedelta(days=7)          # the email may be from an earlier run
+            return await recover_by_email(ctx, page, posting_key, email, password, since=since, why=text)
+    if account_exists(ctx, posting_key):
+        # created earlier (or Workday said it exists): never create it again - confirm the
+        # email address or set your password from Workday's emails
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        return await recover_by_email(ctx, page, posting_key, email, password, since=since, why=text)
     if ctx.profile.workday.create_accounts and account_status(ctx, posting_key) not in ("created",):
         return await create_account(ctx, page, posting_key, email, password)
     set_account(ctx, posting_key, "no_account", text)

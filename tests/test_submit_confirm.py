@@ -180,3 +180,73 @@ def test_only_the_boards_confirmation_counts(sctx, monkeypatch, mode, state, rea
         c.portal.call(sess.close)
     finally:
         c.__exit__(None, None, None)
+
+
+def _mail(ctx, *builders, wait_s=10):
+    from .mailfake import inbox
+    ctx.profile.mail.enabled = True
+    ctx.profile.mail.wait_s = wait_s
+    ctx.mail_fetch = inbox(*builders)
+    ctx.mail_poll_s = 0.2
+
+
+def test_the_emailed_code_is_read_and_entered_after_approve(sctx):
+    from .mailfake import greenhouse_code
+    ctx = sctx("code")
+    _mail(ctx, greenhouse_code("ABCD1234"))
+    c, sess, app_id = _serve(ctx)
+    try:
+        r = c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        assert ctx.ledger.get(GH).state == "submitted", r.text[:2000]
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_a_one_time_code_page_of_another_board(sctx):
+    from .mailfake import message
+    ctx = sctx("otp")
+    _mail(ctx, lambda: message("Ashby <no-reply@ashbyhq.com>", "Your verification code",
+                               "Your verification code is: 482913"))
+    c, sess, app_id = _serve(ctx)
+    try:
+        r = c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        assert ctx.ledger.get(GH).state == "submitted", r.text[:2000]
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_without_mail_the_one_time_code_waits_on_the_card(sctx):
+    ctx = sctx("otp")
+    c, sess, app_id = _serve(ctx)
+    try:
+        c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        row = ctx.ledger.get(GH)
+        assert row.state == "stuck" and row.reason.startswith("email_code") and "verification code" in row.reason
+        assert "Get it from my email" not in c.get("/lane/stuck").text           # mail is off
+        r = c.post(f"/app/{app_id}/code", data={"csrf": sess.csrf, "code": "000000"})
+        assert "not valid" in r.text and ctx.ledger.get(GH).state == "stuck"
+        c.post(f"/app/{app_id}/code", data={"csrf": sess.csrf, "code": "482913"})
+        assert ctx.ledger.get(GH).state == "submitted"
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_no_code_email_in_time_falls_back_to_the_card(sctx):
+    from .mailfake import greenhouse_code
+    ctx = sctx("code")
+    _mail(ctx, wait_s=1)                                  # mail on, but nothing arrives
+    c, sess, app_id = _serve(ctx)
+    try:
+        c.post(f"/app/{app_id}/approve", data={"csrf": sess.csrf, "lane": "ready"})
+        row = ctx.ledger.get(GH)
+        assert row.state == "stuck" and "no code email arrived" in row.reason and ctx.has_live_tab(GH)
+        assert "Get it from my email" in c.get("/lane/stuck").text
+        ctx.mail_fetch = lambda since: [greenhouse_code("ABCD1234")()]          # it came in late
+        c.post(f"/app/{app_id}/code-from-mail", data={"csrf": sess.csrf})
+        assert ctx.ledger.get(GH).state == "submitted"
+        c.portal.call(sess.close)
+    finally:
+        c.__exit__(None, None, None)

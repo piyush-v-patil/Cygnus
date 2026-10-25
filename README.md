@@ -60,6 +60,7 @@ autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applicatio
 autoapply requeue --lane tested                  # after testing: let test-approved jobs be applied for real
 autoapply browser [--url URL]                    # open the tool's browser (Simplify login, profile)
 autoapply workday [login | open <company>]       # Workday: the login it uses, companies that need an account
+autoapply mail [login | test | recent]           # read-only mailbox for security codes and Workday emails
 autoapply schedule install|remove|show           # Windows Task Scheduler
 autoapply health                                 # the pre-run checks on their own
 ```
@@ -110,6 +111,14 @@ Three things are not written back:
 
 Workday sites (Capital One, NVIDIA, Salesforce and many more) need an account on each company's site. Use the same email and password everywhere. Cygnus signs in with them, and creates an account where you have none: if your login is refused at a company, it creates the account there with your email and password, waits `workday.after_create_wait_s` (5 s), and signs in. Creating an account ticks that company's account agreement box for you. If Workday wants the email address verified first, or the form shows a CAPTCHA, the card says so. Set `workday.create_accounts: false` to create accounts yourself instead.
 
+**A new account that refuses its own password.** Many tenants refuse a new account's password until its email address is confirmed, often with a plain "wrong email or password". An account Workday says *already exists* (made by hand or by Simplify's button) also has a password Cygnus doesn't know. With [mail access](#mail-codes-and-workday-emails), Cygnus does what you would do by hand:
+
+1. It opens Workday's verification email, if one came, and signs in.
+2. Otherwise it clicks *Forgot your password?* and opens the reset email.
+3. It sets your Workday password, the same one, and signs in.
+
+Without mail access, it sends the reset email for you and the card says so: set your password from that email, then click **Fill again**. Either way, an account Cygnus knows exists is never created again, which used to be the requeue loop.
+
 Each company is tried **once** until you requeue. After a failed sign-in or account creation, the company's other postings wait without opening, because repeated failed sign-ins are how Workday accounts get locked. Saving a new login with `autoapply workday login` lets those companies be tried again. Workday passwords need 8 or more characters with an uppercase letter, a lowercase letter, a number and a special character; `workday login` checks this.
 
 1. `autoapply workday login` saves the email and password to `secrets.env`; they are hidden in logs. `autoapply setup` asks for them too.
@@ -147,8 +156,24 @@ A Workday application is several pages: My Information, My Experience, Applicati
 
 Cygnus counts an application as sent only when the board confirms it: a confirmation page, a success message, or a confirmation address. Workday has its own check, described above.
 
-- **Security code:** Greenhouse sometimes emails an 8-character code before accepting an application. The tab stays open, the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**. A wrong code shows Greenhouse's message, and you can try again.
+- **Security code:** Greenhouse, and Ashby-style boards, sometimes email a code before accepting an application. With [mail access](#mail-codes-and-workday-emails), Cygnus reads the code after you click **Approve**, types it and finishes; **Approve all** runs through codes unattended. Without mail, or if no email arrives within `mail.wait_s` (180 s), the tab stays open and the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**, or **Get it from my email** for a late email. A wrong code shows the board's message, and you can try again.
 - **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
+
+### Mail: codes and Workday emails
+
+Cygnus can read the few emails a site sends right after it acts: security codes, and Workday's verify and password-reset links. It uses read-only IMAP with a Gmail **app password**:
+
+1. Turn on 2-Step Verification for the Google account.
+2. Create an app password at https://myaccount.google.com/apppasswords and name it Cygnus.
+3. Run `autoapply mail login` (or answer yes in `autoapply setup`). It checks the login, saves the address and app password to `secrets.env` (hidden in logs), and sets `mail.enabled: true`.
+
+What it reads:
+- It only looks at mail that arrived after the Submit or the Workday request it is waiting for.
+- It only uses a code next to "code" wording, or a link on that company's own Workday address.
+- Nothing is marked read, moved or deleted.
+- Codes and links are never logged.
+
+`autoapply mail recent` lists the sender and subject (never the body) of recent Greenhouse, Ashby and Workday emails, which helps when a code or link isn't found. To stop, set `mail.enabled: false`, or delete the app password in your Google account.
 
 ### Simplify, one form at a time
 
@@ -238,6 +263,8 @@ Posting states: `discovered → filtered_out | unsupported | enriched → closed
 | *Configuration problem: profile.yaml: `x` is written twice* | A setting appears twice in profile.yaml, so it is not clear which one you meant. The message gives both line numbers: delete one. |
 | *answers.yaml entry N is skipped* | That saved answer has a typo (for example an unknown `kind:`). The others still work, and the entry is kept in the file until you fix it. |
 | *autoapply run stopped on an unexpected error* | The message names a `...-crash.log` in the profile's `logs` folder, and Discord gets an alert. Share that file (secrets are already removed) when asking for help. |
+| Stuck: `email_code ... (no code email arrived in 180s)` | The email was slow or went to another folder. Click **Get it from my email** once it is there, or type the code. `autoapply mail recent` shows whether it arrived. |
+| Stuck: `workday_reset_sent` | Cygnus has no mail access, so it sent the password reset email for you. Open it, set your Workday password (the same one), then click **Fill again**. Or run `autoapply mail login` once, and Cygnus does this itself. |
 | Review: *That did not work (...)* | An action failed. Nothing was submitted by the error, and the log has the details. If you closed the tool's browser window, the next action opens a new one. |
 | Review: *... is already submitted; nothing was changed* | You clicked a card from an older page or another tab after that application had moved on. Reload the page. |
 | Discord: *the H-1B list (h1b.json) could not be read* | New postings from that source wait for the next run instead of skipping the sponsor check. Postings already in progress continue. Usually a passing network problem. |

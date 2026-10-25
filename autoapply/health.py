@@ -89,6 +89,18 @@ def run_health(ctx: Context, probe_browser: bool = True, review: bool = False) -
             except requests.RequestException as e:
                 rep.add("discord", False, f"webhook unreachable: {type(e).__name__}")
 
+    # mail: codes and Workday links fall back to you when it does not work
+    if profile.mail.enabled:
+        from .mailbox import MailError
+        box = ctx.mailbox
+        if box is None:
+            rep.add("mail", False, "mail.enabled is on but there is no app password: run `autoapply mail login`",
+                    warn_only=True)
+        else:
+            try:
+                rep.add("mail", True, box.check())
+            except MailError as e:
+                rep.add("mail", False, f"{e} - codes and Workday links will wait for you", warn_only=True)
     rep.soft = False
 
     # 7. job sources (skipped for review sessions: they do not read sources)

@@ -63,6 +63,12 @@ class Context:
         from .resumes import Resumes
         return Resumes(self.paths, self.profile)
 
+    @property
+    def mailbox(self):
+        """The mailbox codes and Workday links are read from, or None (mail is off)."""
+        from .mailbox import mailbox_for
+        return mailbox_for(self)
+
     @cached_property
     def notifier(self) -> Notifier:
         n = self.profile.notifications

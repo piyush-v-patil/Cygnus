@@ -77,3 +77,8 @@ review:
 workday:
   create_accounts: true             # login refused -> create the account with your Workday login, then sign in
   after_create_wait_s: 5
+
+mail:                               # read security codes and Workday verify/reset emails (`autoapply mail login`)
+  enabled: false
+  imap_host: imap.gmail.com
+  wait_s: 180                       # how long to wait for the email before leaving it to you

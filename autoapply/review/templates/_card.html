@@ -16,7 +16,8 @@
       <input type="hidden" name="csrf" value="{{csrf}}">
       <label>Security code from the email</label>
       <input type="text" name="code" autocomplete="one-time-code" maxlength="20" style="max-width:220px">
-      <div class="actions"><button class="primary">Enter code &amp; submit</button></div>
+      <div class="actions"><button class="primary">Enter code &amp; submit</button>
+        {% if mail_on %}<button formaction="/app/{{a.id}}/code-from-mail">Get it from my email</button>{% endif %}</div>
     </form>
     {% else %}<div class="why">The tab with this form is gone. Click Open form, submit it there (a new code will be emailed), then click I submitted it.</div>{% endif %}
   {% endif %}

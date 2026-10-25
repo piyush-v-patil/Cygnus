@@ -19,7 +19,8 @@ from .normalize import normalize_question
 
 log = logging.getLogger(__name__)
 ENV_HOME = "AUTOAPPLY_HOME"
-SECRET_KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DISCORD_WEBHOOK_URL", "WORKDAY_EMAIL", "WORKDAY_PASSWORD")
+SECRET_KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "DISCORD_WEBHOOK_URL", "WORKDAY_EMAIL", "WORKDAY_PASSWORD",
+               "MAIL_ADDRESS", "MAIL_APP_PASSWORD")
 
 
 class ConfigError(Exception):
@@ -206,6 +207,14 @@ class WorkdayCfg(_Strict):
     after_create_wait_s: float = Field(5, ge=0, le=60)
 
 
+class MailCfg(_Strict):
+    # read the emails sites send (security codes, Workday verify/reset links) from your
+    # mailbox: read-only IMAP with an app password (`autoapply mail login`)
+    enabled: bool = False
+    imap_host: str = "imap.gmail.com"
+    wait_s: float = Field(180, ge=10, le=900)
+
+
 class Profile(_Strict):
     sources: list[SourceCfg]
     filters: FiltersCfg = FiltersCfg()
@@ -219,6 +228,7 @@ class Profile(_Strict):
     testing: TestingCfg = TestingCfg()
     review: ReviewCfg = ReviewCfg()
     workday: WorkdayCfg = WorkdayCfg()
+    mail: MailCfg = MailCfg()
 
     @property
     def writeback_source(self) -> SourceCfg | None:

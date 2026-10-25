@@ -118,11 +118,13 @@ function emailForm() {
     <div data-automation-id="noCaptchaWrapper"><div data-automation-id="click_filter" aria-label="Submit" style="position:relative"></div>
       <button type="submit" data-automation-id="signInSubmitButton">Sign In</button></div>
     <button data-automation-id="createAccountLink">Create Account</button>
+    <button data-automation-id="forgotPasswordLink">Forgot your password?</button>
     <input type="text" data-automation-id="beecatcher" style="display:none"></form>`;
   const go = () => {
     const em = c.querySelector('[data-automation-id=email]').value, pw = c.querySelector('[data-automation-id=password]').value;
-    const ok = (!PARAMS.get("noaccount") && em === (PARAMS.get("email") || "jane@example.com")
+    let ok = (!PARAMS.get("noaccount") && em === (PARAMS.get("email") || "jane@example.com")
                 && pw === (PARAMS.get("pw") || "Correct-Horse-1!")) || created()[em] === pw;
+    if (ok && PARAMS.get("verifyfirst") && !verified()[em]) ok = false;
     setTimeout(() => {
       if (ok && PARAMS.get("verify")) { error(c, "Please verify your account by clicking the link in the email we sent you."); return; }
       if (ok && PARAMS.get("unknown")) {      // a page the tool has never seen (candidate home)
@@ -135,10 +137,33 @@ function emailForm() {
   c.querySelector('[data-automation-id=click_filter]').onclick = go;
   c.querySelector('[data-automation-id=signInSubmitButton]').onclick = go;
   c.querySelector('[data-automation-id=createAccountLink]').onclick = createForm;
+  c.querySelector('[data-automation-id=forgotPasswordLink]').onclick = forgotForm;
+}
+
+// Forgot your password? (ids as on Mastercard's live form): emails a reset link
+function forgotForm() {
+  const c = document.querySelector('[data-automation-id=signInContent]');
+  c.innerHTML = `<h2>Forgot Password</h2><div data-automation-id="errorSlot"></div>
+    <form data-automation-id="signInFormo" onsubmit="return false">
+    <div data-automation-id="formField-email"><label>Email Address*</label><input type="text" data-automation-id="email"></div>
+    <div data-automation-id="noCaptchaWrapper"><div data-automation-id="click_filter" aria-label="Reset Password"></div>
+      <button type="submit" data-automation-id="resetPasswordButton">Reset Password</button></div>
+    <button data-automation-id="signInLink">Sign In</button></form>`;
+  c.querySelector('[data-automation-id=resetPasswordButton]').onclick = () => {
+    const em = c.querySelector('[data-automation-id=email]').value;
+    localStorage.setItem("wd_reset_requested", em);
+    setTimeout(() => { c.querySelector('form').insertAdjacentHTML("beforebegin", "<p>If an account exists, we sent you an email.</p>"); }, 200);
+  };
+  c.querySelector('[data-automation-id=signInLink]').onclick = () => (PARAMS.get("createfirst") ? emailForm() : render());
 }
 
 // accounts made on this "site" survive reloads, as a real tenant's do
-const created = () => JSON.parse(sessionStorage.getItem("wd_accounts") || "{}");
+// (localStorage: a link from an email opens in another tab of the same browser)
+const created = () => JSON.parse(localStorage.getItem("wd_accounts") || "{}");
+// ?verifyfirst=1: an account signs in only once its email address is confirmed (a verify
+// link, or a password reset); until then Workday says "wrong email or password"
+const verified = () => JSON.parse(localStorage.getItem("wd_verified") || "{}");
+const markVerified = (em) => { const v = verified(); v[em] = true; localStorage.setItem("wd_verified", JSON.stringify(v)); };
 function error(c, text) {
   c.querySelector('[data-automation-id=errorSlot]').innerHTML = `<div data-automation-id="errorMessage">${text}</div>`;
 }
@@ -162,7 +187,7 @@ function createForm() {
       if (have[em] !== undefined || (!PARAMS.get("noaccount") && em === (PARAMS.get("email") || "jane@example.com"))) {
         error(c, "An account with this email address already exists."); return;
       }
-      have[em] = pw; sessionStorage.setItem("wd_accounts", JSON.stringify(have));
+      have[em] = pw; localStorage.setItem("wd_accounts", JSON.stringify(have));
       window.__created = (window.__created || 0) + 1;
       render();                                    // back to Sign In, as many tenants do
     }, 300);
@@ -286,6 +311,26 @@ document.getElementById("next").addEventListener("click", () => {
   setTimeout(() => { step += 1; render(); }, 300);
 });
 
-render();
+// the pages the emailed links open
+if (PARAMS.get("verify_account")) {
+  markVerified(PARAMS.get("verify_account"));
+  document.body.innerHTML = "<h2>Your account is verified</h2>";
+} else if (PARAMS.get("reset_account")) {
+  const em = PARAMS.get("reset_account");
+  document.body.innerHTML = `<div id="reset"><h2>Reset Password</h2><div data-automation-id="errorSlot"></div>
+    <label>New Password*</label><input type="password" data-automation-id="password">
+    <label>Verify New Password*</label><input type="password" data-automation-id="verifyPassword">
+    <button data-automation-id="resetPasswordSubmit">Reset Password</button></div>`;
+  document.querySelector('[data-automation-id=resetPasswordSubmit]').onclick = () => {
+    const a = document.querySelector('[data-automation-id=password]').value, b = document.querySelector('[data-automation-id=verifyPassword]').value;
+    setTimeout(() => {
+      if (!a || a !== b) { document.querySelector('[data-automation-id=errorSlot]').innerHTML = '<div data-automation-id="errorMessage">The passwords do not match.</div>'; return; }
+      const have = created(); have[em] = a; localStorage.setItem("wd_accounts", JSON.stringify(have)); markVerified(em);
+      document.body.innerHTML = "<h2>Your password has been reset</h2>";
+    }, 300);
+  };
+} else {
+  render();
+}
 </script>
 </body></html>
