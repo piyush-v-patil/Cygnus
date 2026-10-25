@@ -54,6 +54,7 @@ class Session:
         self.submitted = 0
         self.manual = 0
         self.csrf = secrets.token_urlsafe(24)
+        self.started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async def browser(self):
         if self.bs is not None and self.bs.closed:
@@ -453,6 +454,11 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
     return app
 
 
+def session_cost(ctx, sess: Session) -> str:
+    from ..pipeline import cost_line
+    return cost_line(ctx.ledger.spend_between(sess.started_at), "during review")
+
+
 def finish_session(ctx, sess: Session) -> None:
     if ctx.writeback is not None:
         n = ctx.writeback.flush()
@@ -499,6 +505,11 @@ def run_and_review(ctx, limit: int | None = None, port: int = 8765, open_browser
         except Exception as e:  # noqa: BLE001 - what is already queued can still be reviewed
             log.exception("the run failed")
             print(f"The run stopped early ({type(e).__name__}: {e}); opening the review queue anyway.")
+        from ..pipeline import cost_line
+        last = ctx.ledger.last_run()
+        if last:
+            print(cost_line(ctx.ledger.run_spend(last)))
+        sess.started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")   # the review part from here
         kept = len(ctx.live_tabs())
         print(f"{kept} filled form(s) are open in the tool's browser and will be submitted as they stand "
               "when you approve them" + (" (test mode: nothing is submitted)." if ctx.never_submit else "."))
@@ -511,7 +522,8 @@ def run_and_review(ctx, limit: int | None = None, port: int = 8765, open_browser
         asyncio.run(main())
     finally:
         finish_session(ctx, sess)
-        print(f"Session over: {sess.submitted} submitted, {sess.manual} recorded as submitted by hand.")
+        print(f"Session over: {sess.submitted} submitted, {sess.manual} recorded as submitted by hand. "
+              + session_cost(ctx, sess))
     return 0
 
 
@@ -529,7 +541,8 @@ def serve(ctx, port: int = 8765, open_browser: bool = True) -> int:
         asyncio.run(main())
     finally:
         finish_session(ctx, sess)
-        print(f"Session over: {sess.submitted} submitted, {sess.manual} recorded as submitted by hand.")
+        print(f"Session over: {sess.submitted} submitted, {sess.manual} recorded as submitted by hand. "
+              + session_cost(ctx, sess))
     return 0
 
 

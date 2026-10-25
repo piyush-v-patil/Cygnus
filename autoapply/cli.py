@@ -305,6 +305,10 @@ def _dispatch(args, paths: Paths) -> int:
                                       open_browser=not args.no_browser)
             counts = run(ctx, limit=args.limit, no_fill=args.no_fill)
         print(_summary(counts))
+        from .pipeline import cost_line
+        last = ctx.ledger.last_run()
+        if last:
+            print(cost_line(ctx.ledger.run_spend(last)))
         from .pipeline import status_report
         print(status_report(ctx))
         print(_next_step(ctx, test=args.test))
