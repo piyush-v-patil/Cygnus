@@ -357,6 +357,31 @@ def step_workday(paths: Paths, io: IO) -> bool:
     return True
 
 
+def step_mail(paths: Paths, io: IO) -> bool:
+    """Read-only access to the mailbox the sites write to. True when it works."""
+    io.say("\n== Email ==\n  Greenhouse and Ashby sometimes email a security code after Submit, and a new Workday\n"
+           "  account may need its email confirmed. Cygnus can read just those emails (read-only,\n"
+           "  only mail that arrives after it acts) with a Gmail app password: turn on 2-Step\n"
+           "  Verification, then create one at https://myaccount.google.com/apppasswords.")
+    if not io.yes("Let Cygnus read those emails?", False):
+        return False
+    have = load_secrets(paths)
+    address = io.ask("Email address", have.get("MAIL_ADDRESS") or have.get("WORKDAY_EMAIL") or "")
+    pw = io.secret("Gmail app password (16 letters, typing is hidden)").replace(" ", "")
+    if "@" not in address or not pw:
+        io.say("  Skipped - set it up later with `autoapply mail login`.")
+        return False
+    from .mailbox import MailError, Mailbox
+    try:
+        io.say("  " + Mailbox("imap.gmail.com", address, pw).check())
+    except MailError as e:
+        io.say(f"  That did not work ({e}). Skipped - try again with `autoapply mail login`.")
+        return False
+    save_secret(paths, "MAIL_ADDRESS", address)
+    save_secret(paths, "MAIL_APP_PASSWORD", pw)
+    return True
+
+
 def ensure_anthropic_key(paths: Paths, io: IO) -> str | None:
     key = load_secrets(paths).get("ANTHROPIC_API_KEY")       # file or environment; never re-saved
     while not key:
@@ -515,6 +540,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     if step_workday(paths, io):
         allowed = list(filters.get("ats_allowed") or ["greenhouse", "ashby", "lever"])
         filters["ats_allowed"] = allowed + ([] if "workday" in allowed else ["workday"])
+    mail = step_mail(paths, io)
     consent = step_simplify(paths, io)
     io.say("\n== Fit ==")
     cutoff = ask_number(io, "Fit cutoff 0-100 (postings scoring lower are skipped)", 65, 0, 100)
@@ -531,6 +557,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
         "notifications": {"discord": discord,
                           "needs_input_ping": "immediate", "ping_group_threshold": 5},
         "testing": {"never_submit": False},
+        "mail": {"enabled": mail},
     }
     note = write_profile(paths, data)
     if not paths.answers.exists():

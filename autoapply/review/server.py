@@ -141,6 +141,7 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             "counts": counts, "lane_titles": LANE_TITLES, "spend": led.month_spend(),
             "budget": ctx.profile.llm.monthly_budget_usd, "csrf": sess.csrf, "source_label": SOURCE_LABEL,
             "test_mode": ctx.never_submit, "flash": request.query_params.get("msg"),
+            "mail_on": ctx.profile.mail.enabled,
             "live_tabs": len(ctx.live_tabs()), **kw})
 
     @app.get("/", response_class=HTMLResponse)
@@ -362,6 +363,31 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         lane = STUCK if res["state"] == STUCK else READY
         return _back(lane, f"{p.get('company')} - {p.get('title')}: {res['state']} ({res['detail']})", app_id)
 
+    @app.post("/app/{app_id}/code-from-mail")
+    async def code_from_mail(app_id: int, csrf: str = Form("")):
+        """Read the code from your mailbox (mail.enabled) instead of typing it."""
+        check_csrf(csrf)
+        key = _key(app_id)
+        from datetime import datetime, timedelta, timezone
+
+        from ..browser.submit import enter_code, find_code
+        if not ctx.has_live_tab(key):
+            return _back(STUCK, "The tab with this form is gone.", app_id)
+        clicked = (ctx.ledger.application(key) or {}).get("submit_clicked_at")
+        since = (datetime.strptime(clicked, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) if clicked
+                 else datetime.now(timezone.utc) - timedelta(hours=1))
+        async with sess.lock:
+            got = await find_code(ctx, _active(key), ctx.open_tabs[key], since, timeout_s=60)
+            if not got:
+                return _back(STUCK, "No code email found (mail off, or nothing arrived yet). Type the code instead.",
+                             app_id)
+            res = await enter_code(ctx, key, got)
+        if res["state"] == SUBMITTED:
+            sess.submitted += 1
+        p = ctx.ledger.get(key)
+        return _back(STUCK if res["state"] == STUCK else READY,
+                     f"{p.get('company')} - {p.get('title')}: {res['state']} ({res['detail']})", app_id)
+
     @app.post("/app/{app_id}/manual")
     async def manual(app_id: int, csrf: str = Form(""), lane: str = Form(STUCK)):
         """You sent it yourself in the form's tab (e.g. after a code or check there)."""
@@ -381,6 +407,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             tab, _ = ctx.take_tab(k)
             if tab is not None and not tab.is_closed():
                 await tab.close()
+        from ..browser.workday import clear_accounts
+        clear_accounts(ctx, keys)              # a Workday sign-in that stopped gets another try
         return len(ctx.ledger.requeue_keys(keys)), len(clicked)
 
     def _refill_msg(n: int, skipped: int, one: bool = False) -> str:

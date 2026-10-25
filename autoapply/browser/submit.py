@@ -37,6 +37,34 @@ SUCCESS_TEXT = re.compile(r"thank you for (applying|your application|submitting)
 CODE_BOX = "[id^='security-input-']"
 CODE_TEXT = ".email-verification legend, #email-verification-label"
 CODE_ERROR = "#email-verification-error"
+# other boards (Ashby and the like): a one-time-code input next to "verification code"
+# wording. Not seen live yet - kept loose: any visible code-like input (not a postal, phone
+# or promo code) on a page that says a code was sent or must be entered
+OTP_JS = """() => {
+  const shown = (e) => e.offsetParent !== null;
+  const words = (e) => [e.getAttribute('aria-label'), e.placeholder, e.name, e.id,
+                        e.labels && e.labels[0] && e.labels[0].innerText].join(' ');
+  const text = document.body ? document.body.innerText : '';
+  const ask = /(verification|security|confirmation|one[- ]time|access)\\s+code|enter (the|your) code|code (we|was|has been) (sent|emailed)/i;
+  if (!ask.test(text)) return [];
+  const inputs = [...document.querySelectorAll('input')].filter(shown)
+    .filter((e) => !['hidden', 'checkbox', 'radio', 'file', 'submit', 'button', 'email', 'password'].includes(e.type))
+    .filter((e) => e.autocomplete === 'one-time-code' || /code|otp|\\bpin\\b/i.test(words(e)))
+    .filter((e) => !/postal|zip|country|area|promo|discount|referral|coupon|phone/i.test(words(e)));
+  inputs.forEach((e, i) => e.setAttribute('data-aa-otp', String(i)));
+  const m = text.match(new RegExp('[^\\n.]{0,80}(' + ask.source + ')[^\\n.]{0,80}', 'i'));
+  return inputs.length ? [m ? m[0].trim() : 'a code was emailed to you', inputs.map((e) => e.maxLength > 0 ? e.maxLength : 0)] : [];
+}"""
+CODE_SUBMIT_JS = """() => {
+  // the button that goes with the code input: Verify / Confirm / Continue / Submit near it
+  let el = document.querySelector('[data-aa-otp="0"]');
+  for (let i = 0; el && i < 6; i++, el = el.parentElement) {
+    const b = [...el.querySelectorAll('button, [role=button], input[type=submit]')]
+      .find((x) => x.offsetParent !== null && /verify|confirm|continue|submit/i.test(x.innerText || x.value || ''));
+    if (b) { b.click(); return true; }
+  }
+  return false;
+}"""
 
 
 class SubmitBlocked(Exception):
@@ -90,37 +118,71 @@ async def _headings(page) -> str:
 
 
 async def _code_prompt(page) -> str | None:
-    """Greenhouse's "enter the code we emailed" step: its wording, or None."""
+    """The board's "enter the code we emailed" step (Greenhouse's boxes, or a generic
+    one-time-code input): its wording, or None."""
     boxes = page.locator(CODE_BOX)
     try:
-        if not await boxes.count() or not await boxes.first.is_visible():
-            return None
-        t = page.locator(CODE_TEXT)
-        return " ".join((await t.first.inner_text()).split()) if await t.count() else "a security code was emailed to you"
+        if await boxes.count() and await boxes.first.is_visible():
+            t = page.locator(CODE_TEXT)
+            return " ".join((await t.first.inner_text()).split()) if await t.count() else "a security code was emailed to you"
+        found = await page.evaluate(OTP_JS)
+        return " ".join(found[0].split())[:200] if found else None
     except Exception:  # noqa: BLE001
         return None
+
+
+async def code_fields(page) -> tuple[list, int | None]:
+    """(inputs to type the code into, the code's length if the page tells it)."""
+    boxes = page.locator(CODE_BOX)
+    n = await boxes.count()
+    if n:
+        return [page.locator(f"#security-input-{i}") for i in range(n)], n
+    found = await page.evaluate(OTP_JS)
+    if not found:
+        return [], None
+    sizes = found[1]
+    inputs = [page.locator(f'[data-aa-otp="{i}"]') for i in range(len(sizes))]
+    if len(inputs) > 1:
+        return inputs, len(inputs)
+    return inputs, sizes[0] or None
+
+
+async def _code_error(page) -> str:
+    err = page.locator(CODE_ERROR)
+    if await err.count() and (await err.first.inner_text()).strip():
+        return " ".join((await err.first.inner_text()).split())
+    try:
+        return (await page.evaluate("""() => { const e = [...document.querySelectorAll('[role=alert], [class*=error]')]
+            .find((x) => x.offsetParent !== null && x.innerText.trim()); return e ? e.innerText.trim() : ''; }""")
+                or "")[:200] or "the code was not accepted"
+    except Exception:  # noqa: BLE001
+        return "the code was not accepted"
 
 
 SUBMIT_WAIT_S = 30.0
 
 
 async def after_click(page, ats_name: str, hints: dict, before: str, timeout_s: float | None = None,
-                      before_problem: str | None = None) -> tuple[str, str]:
+                      before_problem: str | None = None, code_grace_s: float = 0,
+                      code_error_before: str | None = None) -> tuple[str, str]:
     """What a Submit click led to: ("confirmed" | "code" | "error" | "unconfirmed", detail).
 
     Only the board's own confirmation counts as sent; a page that merely lost its form (a
     network error, a reload) is "unconfirmed". An error already on the page before the
-    click (`before_problem`, e.g. a cookie banner) is not the click's error."""
+    click (`before_problem`, e.g. a cookie banner) is not the click's error. After a code was
+    typed, the code page staying up counts only after `code_grace_s` or with an error shown."""
     import asyncio
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + (SUBMIT_WAIT_S if timeout_s is None else timeout_s)
+    start = loop.time()
+    deadline = start + (SUBMIT_WAIT_S if timeout_s is None else timeout_s)
     css = SUCCESS_CSS.get(ats_name)
     while loop.time() < deadline:
         await asyncio.sleep(1.0)
         if page.is_closed():
             return "unconfirmed", "the tab closed"
         code = await _code_prompt(page)
-        if code:
+        if code and (loop.time() - start >= code_grace_s
+                     or await _code_error(page) not in ("the code was not accepted", code_error_before)):
             return "code", code
         if css and await page.locator(css).count():
             return "confirmed", "confirmation shown"
@@ -347,7 +409,8 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
     try:
         # recorded before the click: if anything stops between here and the confirmation,
         # the application is never sent again without you saying so
-        led.upsert_application(posting_key, submit_clicked_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        clicked = datetime.now(timezone.utc)
+        led.upsert_application(posting_key, submit_clicked_at=clicked.strftime("%Y-%m-%dT%H:%M:%SZ"))
         await click_submit(ctx, page, hints)
         if hints.get("workday"):
             try:
@@ -364,7 +427,7 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
         else:
             outcome, info = await after_click(page, ref.ats, hints, before, before_problem=before_problem)
             if outcome == "code":
-                return await _needs_code(ctx, posting_key, page, sub, info)
+                return await code_from_mail(ctx, posting_key, page, sub, info, clicked)
             if outcome == "error":
                 raise Stuck("submit_failed", info)
             if outcome == "unconfirmed":
@@ -413,6 +476,46 @@ async def _needs_code(ctx, posting_key: str, page, sub, info: str) -> dict:
     return {"state": STUCK, "detail": "the board emailed you a security code - enter it on the Stuck card"}
 
 
+async def find_code(ctx, posting_key: str, page, since: datetime, timeout_s: float | None = None) -> str | None:
+    """The code from the board's email, read from your mailbox (None: mail is off or no email came)."""
+    import asyncio
+    from ..mailbox import MailError, security_code
+    box = ctx.mailbox
+    if box is None:
+        return None
+    _, length = await code_fields(page)
+    company = ctx.ledger.get(posting_key).get("company") or ""
+    wait = ctx.profile.mail.wait_s if timeout_s is None else timeout_s
+    log.info("    waiting up to %ds for the security code email", int(wait))
+    try:
+        return await asyncio.to_thread(box.wait_for, lambda m: security_code(m, company, length), since, wait,
+                                       "the security code email")
+    except MailError as e:
+        log.warning("    could not read the mailbox: %s", e)
+        return None
+
+
+async def code_from_mail(ctx, posting_key: str, page, sub, info: str, since: datetime) -> dict:
+    """After Approve: the board emailed a code. With mail on, read it, type it and finish;
+    otherwise (or when that fails) the card waits in Stuck with a box for the code."""
+    if ctx.mailbox is None:
+        return await _needs_code(ctx, posting_key, page, sub, info)
+    code = await find_code(ctx, posting_key, page, since)
+    if not code:
+        return await _needs_code(ctx, posting_key, page, sub, f"{info} (no code email arrived in "
+                                 f"{int(ctx.profile.mail.wait_s)}s)")
+    ctx.remember_tab(posting_key, page)
+    res = await enter_code(ctx, posting_key, code)
+    if res["state"] == SUBMITTED:
+        return res
+    if ctx.ledger.get(posting_key).state != STUCK:
+        if await _code_prompt(page):
+            return await _needs_code(ctx, posting_key, page, sub, f"{info} (the code from the email was not "
+                                     f"accepted: {res['detail']})")
+        _stuck(ctx, posting_key, Stuck("submit_unconfirmed", res["detail"]), page)
+    return {"state": STUCK, "detail": res["detail"]}
+
+
 async def enter_code(ctx, posting_key: str, code: str) -> dict:
     """Type the emailed security code into the kept tab, click Submit again, and record it
     once the board confirms."""
@@ -423,24 +526,31 @@ async def enter_code(ctx, posting_key: str, code: str) -> dict:
     page = ctx.open_tabs[posting_key]
     hints = form_hints(parse_key(posting_key).ats)
     code = re.sub(r"\s+", "", code or "")
-    boxes = page.locator(CODE_BOX)
-    n = await boxes.count()
-    if not n:
+    inputs, length = await code_fields(page)
+    if not inputs:
         return {"state": STUCK, "detail": "the form is not asking for a code (any more). Check the tab"}
-    if len(code) != n:
-        return {"state": STUCK, "detail": f"the code has {n} characters; you typed {len(code)}"}
-    for i, ch in enumerate(code):
-        box = page.locator(f"#security-input-{i}")
-        await box.fill("")
-        await box.type(ch, delay=30)
+    if length and len(code) != length:
+        return {"state": STUCK, "detail": f"the code has {length} characters; you typed {len(code)}"}
+    if len(inputs) > 1:                        # one box per character
+        for box, ch in zip(inputs, code):
+            await box.fill("")
+            await box.type(ch, delay=30)
+    else:
+        await inputs[0].fill("")
+        await inputs[0].type(code, delay=30)
     before = await _headings(page)
-    before_problem = await _form_problems_after_submit(page, hints)
-    await click_submit(ctx, page, hints)
-    outcome, info = await after_click(page, parse_key(posting_key).ats, hints, before, before_problem=before_problem)
+    old_error = await _code_error(page)                     # from an earlier wrong code: not this code's
+    greenhouse_boxes = await page.locator(CODE_BOX).count()
+    before_problem = await _form_problems_after_submit(page, hints) if greenhouse_boxes else None
+    if greenhouse_boxes or not await page.evaluate(CODE_SUBMIT_JS):
+        if greenhouse_boxes:
+            await click_submit(ctx, page, hints)
+        else:
+            await inputs[-1].press("Enter")
+    outcome, info = await after_click(page, parse_key(posting_key).ats, hints, before, before_problem=before_problem,
+                                      code_grace_s=10, code_error_before=old_error)
     if outcome == "code":
-        err = page.locator(CODE_ERROR)
-        why = " ".join((await err.first.inner_text()).split()) if await err.count() else "the code was not accepted"
-        return {"state": STUCK, "detail": f"{why}. Check the email and try again"}
+        return {"state": STUCK, "detail": f"{await _code_error(page)}. Check the email and try again"}
     if outcome == "confirmed":
         app = led.application(posting_key) or {}
         sub = Path(app["submission_dir"]) if app.get("submission_dir") else submission_dir(

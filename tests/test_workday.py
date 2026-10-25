@@ -225,7 +225,7 @@ def test_failed_sign_in_holds_that_companys_postings_until_requeued(wctx):
             await fill_many(ctx, [WD], RunStats(), session=bs)
     asyncio.run(go())
     row = ctx.ledger.get(WD)
-    assert row.state == "stuck" and "workday_sign_in_failed" in row.reason
+    assert row.state == "stuck" and "workday_reset_sent" in row.reason       # the reset email is sent for you
     assert account_blocked(ctx, WD2) and WD2 not in fill_candidates(ctx, None)
     clear_accounts(ctx, [WD])                               # what `autoapply requeue --lane stuck` does
     assert WD2 in fill_candidates(ctx, None)
@@ -317,11 +317,14 @@ def test_no_account_yet_creates_one_waits_and_signs_in(wctx):
 @pytest.mark.browser
 @pytest.mark.skipif(not Path(CHROMIUM).exists(), reason="needs Playwright Chromium")
 def test_account_that_exists_with_another_password_is_not_created_again(wctx):
+    from autoapply.browser.workday import account_exists
     ctx = wctx(password="Someone-Elses-9!")       # an account exists, with a different password
     seed(ctx, WD)
     _fill(ctx)
     row = ctx.ledger.get(WD)
-    assert row.state == "stuck" and "already exists" in row.reason and "Forgot your password" in row.reason
+    # without mail: the reset email is sent for you, and the account is never created again
+    assert row.state == "stuck" and "workday_reset_sent" in row.reason and "already exists" in row.reason
+    assert account_exists(ctx, WD)
 
 
 @pytest.mark.browser
@@ -652,3 +655,64 @@ def test_no_create_form_blocks_the_company_instead_of_retrying(wctx, monkeypatch
     asyncio.run(go())
     assert "no Create Account form" in ctx.ledger.get(WD).reason and account_blocked(ctx, WD)
     assert ctx.ledger.get(WD2).state == SCORED                # not tried again in the same run
+
+
+
+def _with_mail(ctx, *kinds):
+    from .mailfake import inbox, workday_mail
+    ctx.profile.mail.enabled = True
+    ctx.profile.mail.wait_s = 10
+    ctx.mail_fetch = inbox(*[workday_mail(k) for k in kinds])
+    ctx.mail_poll_s = 0.2
+    base = (FORMS / "workday.html").resolve().as_uri()
+    ctx.mail_link_rewrite = lambda url: base + ("?verify_account=" if "/activate/" in url else "?reset_account=") \
+        + "jane@example.com"
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_a_new_account_waiting_for_its_email_is_verified_from_the_mail(wctx):
+    """The account was just made, and Workday says "wrong password" until the address is confirmed."""
+    from autoapply.browser.workday import accounts
+    ctx = wctx(params="&noaccount=1&verifyfirst=1")
+    _with_mail(ctx, "verify")
+    seed(ctx, WD)
+    _walk_with(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason          # signed in, walked on
+    acc = accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]
+    assert acc["status"] == "ok" and acc["note"] == "verified by email" and acc["exists"]
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_an_account_with_another_password_gets_yours_from_the_reset_email(wctx):
+    """What you did by hand: Forgot password, the email's link, the same Workday password, sign in."""
+    from autoapply.browser.workday import accounts
+    ctx = wctx(password="Someone-Elses-9!")
+    _with_mail(ctx, "reset")
+    seed(ctx, WD)
+    _walk_with(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason
+    acc = accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]
+    assert acc["status"] == "ok" and acc["note"] == "password reset by email"
+
+
+@BROWSER[0]
+@BROWSER[1]
+def test_a_new_account_with_no_verify_email_is_reset_instead(wctx):
+    from autoapply.browser.workday import accounts
+    ctx = wctx(params="&noaccount=1&verifyfirst=1")
+    _with_mail(ctx, "reset")                               # only a reset email will come
+    ctx.profile.mail.wait_s = 10
+    seed(ctx, WD)
+    _walk_with(ctx)
+    assert ctx.ledger.get(WD).state == "needs_input", ctx.ledger.get(WD).reason
+    assert accounts(ctx)["acme@acme.wd5.myworkdayjobs.com"]["note"] == "password reset by email"
+
+
+def test_requeue_keeps_knowing_the_account_exists(wctx):
+    from autoapply.browser.workday import account_status, clear_accounts, set_account
+    ctx = wctx()
+    set_account(ctx, WD, "no_account", "An account with this email address already exists.", exists=True)
+    clear_accounts(ctx, [WD])
+    assert account_status(ctx, WD) == "created"            # signed in to (or reset) next time, never created

@@ -4,7 +4,8 @@
 <!-- Greenhouse's submit step, built like the live job-boards client: when its bot check is
      unsure it emails an 8-character code and shows one box per character (security-input-N);
      the application is sent once the code is entered and Submit is clicked again.
-     ?mode=code (default) | ok (confirms at once) | silent (nothing happens) -->
+     ?mode=code (default) | ok (confirms at once) | silent (nothing happens) | otp (one 6-digit code
+     input with its own Verify button; the confirmation takes 1.5 s) -->
 <div id="app">
 <form id="application-form" onsubmit="return false">
   <div class="field"><label for="first_name">First Name<span>*</span></label>
@@ -39,6 +40,19 @@ document.getElementById("submit").addEventListener("click", () => {
   }
   if (MODE === "banner") { setTimeout(confirmPage, 1500); return; }
   if (MODE === "silent" || MODE === "ok") return;
+  if (MODE === "otp") {             // a one-time-code step like other boards use (Ashby-style, not Greenhouse's boxes)
+    if (asked) return;
+    asked = true;
+    document.getElementById("verification").innerHTML =
+      `<div class="otp"><h2>Verify your email</h2><p>Enter the verification code we sent to jane@example.com</p>
+       <input id="otp" autocomplete="one-time-code" maxlength="6" aria-label="Verification code">
+       <button type="button" id="verify">Verify</button><p class="otp-error"></p></div>`;
+    document.getElementById("verify").onclick = () => {
+      if (document.getElementById("otp").value === "482913") { setTimeout(confirmPage, 1500); return; }
+      document.querySelector(".otp-error").textContent = "That code is not valid";
+    };
+    return;
+  }
   if (!asked) {
     asked = true;
     let boxes = "";

@@ -151,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("workday", help="Workday accounts: the login the tool uses, and which companies need one")
     w.add_argument("action", nargs="?", choices=["list", "login", "open"], default="list")
     w.add_argument("company", nargs="?", help="with open: the company (tenant) whose sign-up page to open")
+    m = sub.add_parser("mail", help="the mailbox security codes and Workday links are read from")
+    m.add_argument("action", nargs="?", choices=["test", "login", "recent"], default="test")
     return p
 
 
@@ -242,6 +244,10 @@ def _dispatch(args, paths: Paths) -> int:
     if args.cmd == "workday":
         from .workday_cmd import workday_command
         return workday_command(Context(paths), args.action, args.company)
+
+    if args.cmd == "mail":
+        from .mail_cmd import mail_command
+        return mail_command(Context(paths), args.action)
 
     if args.cmd == "requeue":
         lanes = {"all": ["ready", "needs_input", "stuck"], "tested": ["would_submit"]}.get(args.lane, [args.lane])

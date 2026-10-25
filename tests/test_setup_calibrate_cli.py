@@ -129,6 +129,7 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
         "y", str(csv),          # csv source
         "n",                    # no discord
         "y", "jane@example.com", "Secret-Pass-1!",   # Workday: yes, login
+        "n",                    # no mail access
         "n",                    # do not download Simplify
         "70", "manual",
     ])
@@ -155,7 +156,7 @@ def test_wizard_rerun_reasks_bad_input_and_keeps_hand_edits(tmp_path, monkeypatc
     paths.profile.write_text("review:\n  port: 9999\n", encoding="utf-8")       # a hand edit
     script = iter(["y", str(pdf), "", "", "r.pdf", "",
                    "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
-                   "n", "n", "n", "n", "n",
+                   "n", "n", "n", "n", "n", "n",
                    "seventy", "150", "70",                     # re-asked until valid
                    "daily", "8:00, 25:00", "8:00"])
     said = []
@@ -187,7 +188,7 @@ def test_wizard_does_not_save_unconfirmed_visa(tmp_path, monkeypatch):
     script = iter(["y", str(pdf), "", "", "r.pdf", "",
                    "newgrad", "software", "us_or_remote", "citizen_gc", "n", "n",   # not confirmed
                    "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
-                   "n", "n", "n", "n", "n", "65", "manual"])
+                   "n", "n", "n", "n", "n", "n", "65", "manual"])
     paths = Paths(tmp_path / "p")
     run_wizard(paths, IO(ask=lambda p: next(script), say=lambda s: None))
     prof = load_profile(paths)
