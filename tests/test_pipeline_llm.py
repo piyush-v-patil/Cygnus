@@ -576,3 +576,45 @@ def test_requeue_of_a_never_scored_posting_starts_it_over(make_ctx):
     led.set_state(key, STUCK, "score: boom")              # an old-style Stuck from before scoring
     assert led.requeue_keys([key]) == [key] and led.get(key).state == "discovered"
     assert key not in fill_candidates(ctx, None)
+
+
+def test_a_runs_cost_counts_only_its_own_claude_calls(make_ctx):
+    from autoapply.pipeline import cost_line, status_report
+    ctx = make_ctx()
+    led = ctx.ledger
+    led.db.execute("INSERT INTO llm_usage VALUES ('2026-10-01T08:00:00Z','score','m',0,0,0,0,5.0,NULL)")  # an older run
+    led.db.execute("INSERT INTO runs (started_at, ended_at, kind, counts_json) VALUES "
+                   "('2026-10-25T08:00:00Z','2026-10-25T08:30:00Z','run','{}')")
+    for ts, purpose, cost in (("2026-10-25T08:05:00Z", "score", 0.02), ("2026-10-25T08:06:00Z", "score", 0.03),
+                              ("2026-10-25T08:10:00Z", "answer", 0.25), ("2026-10-25T09:00:00Z", "answer", 1.0)):
+        led.db.execute("INSERT INTO llm_usage VALUES (?,?,'m',0,0,0,0,?,NULL)", (ts, purpose, cost))
+    spend = led.run_spend(led.last_run())
+    assert spend["total"] == pytest.approx(0.30) and spend["calls"] == 3
+    line = cost_line(spend)
+    assert line == "Claude cost this run: $0.30 (form answers $0.25, 1 call · scoring $0.05, 2 calls)"
+    assert line in status_report(ctx)
+    assert cost_line(led.spend_between("2030-01-01T00:00:00Z")) == "Claude cost this run: $0.00"
+
+
+def test_run_reports_its_cost_to_discord(make_ctx, transport, monkeypatch):
+    import autoapply.pipeline as pl
+    ctx = make_ctx()
+    cl, _ = clients()
+    monkeypatch.setattr(pl.ats, "clients", lambda http=None: cl)
+    sent = []
+    monkeypatch.setattr(ctx.notifier.discord, "send", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(ctx.notifier.discord, "enabled", True)
+    run(ctx, no_fill=True)
+    cost = ctx.ledger.run_spend(ctx.ledger.last_run())["total"]
+    assert cost > 0 and any(f"This run cost ${cost:.2f}" in m for m in sent)
+
+
+def test_cli_run_prints_the_cost(profile_dir, monkeypatch, capsys):
+    import autoapply.health as health
+    import autoapply.pipeline as pl
+    from autoapply.cli import main
+    from autoapply.health import Report
+    monkeypatch.setattr(health, "run_health", lambda ctx, **kw: Report())
+    monkeypatch.setattr(pl, "run", lambda ctx, **kw: (ctx.ledger.end_run(ctx.ledger.start_run("run"), {}), {})[1])
+    assert main(["--profile-dir", str(profile_dir.root), "run", "--no-fill"]) == 0
+    assert "Claude cost this run: $0.00" in capsys.readouterr().out

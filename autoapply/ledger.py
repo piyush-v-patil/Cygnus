@@ -355,6 +355,19 @@ class Ledger:
                             (month,)).fetchone()
         return float(r[0])
 
+    def spend_between(self, start: str, end: str | None = None) -> dict:
+        """Claude spend from `start` to `end` (ISO times; end None = now):
+        {"total": $, "calls": n, "by_purpose": {purpose: ($, calls)}}."""
+        rows = self.db.execute(
+            "SELECT purpose, COALESCE(SUM(cost_usd),0), COUNT(*) FROM llm_usage WHERE ts >= ? AND (? IS NULL OR ts <= ?)"
+            " GROUP BY purpose", (start, end, end)).fetchall()
+        by = {r[0]: (float(r[1]), int(r[2])) for r in rows}
+        return {"total": sum(c for c, _ in by.values()), "calls": sum(n for _, n in by.values()), "by_purpose": by}
+
+    def run_spend(self, run: dict) -> dict:
+        """What one run (a `runs` row) spent: its start to its end, or to now while it runs."""
+        return self.spend_between(run["started_at"], run.get("ended_at"))
+
     # ----------------------------------------------------------------- runs --
     def start_run(self, kind: str) -> int:
         return self.db.execute("INSERT INTO runs (started_at, kind) VALUES (?,?)",
@@ -363,6 +376,10 @@ class Ledger:
     def end_run(self, run_id: int, counts: dict, error: str | None = None):
         self.db.execute("UPDATE runs SET ended_at=?, counts_json=?, error=? WHERE id=?",
                         (now_iso(), json.dumps(counts), error, run_id))
+
+    def run(self, run_id: int) -> dict | None:
+        r = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        return dict(r) if r else None
 
     def last_run(self, kind: str = "run") -> dict | None:
         r = self.db.execute("SELECT * FROM runs WHERE kind=? ORDER BY id DESC LIMIT 1", (kind,)).fetchone()

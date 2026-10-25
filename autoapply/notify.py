@@ -139,7 +139,7 @@ class Notifier:
         self.needs_input.clear()
         self._immediate_sent = 0
 
-    def run_summary(self, counts: dict, spend: float, budget: float):
+    def run_summary(self, counts: dict, spend: float, budget: float, run_cost: float | None = None):
         skipped = counts.get("skipped_by_reason", {})
         lines = ["**AutoApply run finished**",
                  f"Scored {counts.get('scored', 0)} · Ready {counts.get('ready', 0)} · "
@@ -154,7 +154,8 @@ class Notifier:
             lines.append(f"Closed: {counts['closed']}")
         if counts.get("stopped"):
             lines.append(f"Stopped early: {counts['stopped']}")
-        lines.append(f"Spend this month: ${spend:.2f} of ${budget:.2f}")
+        lines.append((f"This run cost ${run_cost:.2f} · " if run_cost is not None else "")
+                     + f"Spend this month: ${spend:.2f} of ${budget:.2f}")
         self.discord.send("\n".join(lines))
 
     def review_summary(self, submitted: int, manual: int = 0):

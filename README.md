@@ -198,7 +198,7 @@ A run missed while the PC was off is not made up. The next run carries on from t
 
 ### Budget
 
-Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend. A model the table does not know, such as a new model id, is counted at the highest known rate, never as free; the health check says so. Set its price in `llm.pricing` to fix the count.
+Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the built-in table). `status` and the review header show this month's spend. Each run ends with what it cost, for example `Claude cost this run: $0.42 (form answers $0.27, 12 calls · scoring $0.10, 85 calls · cover letters $0.05, 2 calls)`. `autoapply status` repeats it for the last run, the Discord run summary includes it, and a review session prints what it spent at *Session over*. A model the table does not know, such as a new model id, is counted at the highest known rate, never as free; the health check says so. Set its price in `llm.pricing` to fix the count.
 
 - When this month's spend reaches `monthly_budget_usd`, the run stops before any Claude call and you get an alert.
 - If the budget runs out mid-run, the tool stops starting new calls and finishes what is in progress.

@@ -416,7 +416,8 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
         counts = stats.as_dict()
         led.end_run(run_id, counts, error)
         if error is None:
-            ctx.notifier.run_summary(counts, led.month_spend(), ctx.profile.llm.monthly_budget_usd)
+            ctx.notifier.run_summary(counts, led.month_spend(), ctx.profile.llm.monthly_budget_usd,
+                                     run_cost=led.run_spend(led.run(run_id))["total"])
     return stats.as_dict()
 
 
@@ -469,6 +470,17 @@ def run_breakdown(counts: dict) -> list[str]:
     return lines
 
 
+PURPOSE_LABELS = {"score": "scoring", "answer": "form answers", "cover_letter": "cover letters",
+                  "wizard": "setup"}
+
+
+def cost_line(spend: dict, what: str = "this run") -> str:
+    """"Claude cost this run: $0.42 (scoring $0.10, 85 calls · form answers $0.27, 12 calls)"."""
+    parts = [f"{PURPOSE_LABELS.get(p, p)} ${c:.2f}, {n} call{'s' if n != 1 else ''}"
+             for p, (c, n) in sorted(spend["by_purpose"].items(), key=lambda kv: -kv[1][0])]
+    return f"Claude cost {what}: ${spend['total']:.2f}" + (f" ({' · '.join(parts)})" if parts else "")
+
+
 def status_report(ctx: Context) -> str:
     led = ctx.ledger
     counts = led.counts()
@@ -489,6 +501,7 @@ def status_report(ctx: Context) -> str:
                      + (f" (error: {last['error']})" if last.get("error") else ""))
         counts_json = last.get("counts_json")
         lines += run_breakdown(json.loads(counts_json) if counts_json else {})
+        lines.append("  " + cost_line(led.run_spend(last)))
     pend = led.db.execute("SELECT COUNT(*) FROM writeback_queue WHERE done_at IS NULL").fetchone()[0]
     if pend:
         lines.append(f"Write-backs pending: {pend}")
