@@ -260,3 +260,16 @@ def test_closed_browser_window_is_reopened(make_ctx, tmp_path):
         await page.goto("about:blank")
         await sess.close()
     asyncio.run(go())
+
+
+def test_paused_company_card_says_so_and_approve_all_leaves_it(client):
+    from autoapply.companies import pause
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    save_answers(client.ctx.ledger, client.ctx.answers, "greenhouse:a:1", {"id:q105": "Yes"})
+    pause(client.ctx, "acme")
+    page = client.get("/lane/ready").text
+    assert "Acme paused until" in page
+    app_id = client.ctx.ledger.application("greenhouse:a:1")["id"]
+    r = client.post("/approve-all", data={"csrf": client.csrf, "ids": str(app_id)})
+    assert "Left for you (company paused): Acme" in r.text
+    assert client.ctx.ledger.get("greenhouse:a:1").state == READY

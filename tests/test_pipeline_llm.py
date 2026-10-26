@@ -618,3 +618,75 @@ def test_cli_run_prints_the_cost(profile_dir, monkeypatch, capsys):
     monkeypatch.setattr(pl, "run", lambda ctx, **kw: (ctx.ledger.end_run(ctx.ledger.start_run("run"), {}), {})[1])
     assert main(["--profile-dir", str(profile_dir.root), "run", "--no-fill"]) == 0
     assert "Claude cost this run: $0.00" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("company,wanted,hit", [
+    ("Capital One Financial", "capital one", True), ("CapitalOne", "capital one", True),
+    ("Capital One", "capitalone", True), ("Capital One, Inc.", "Capital One", True),
+    ("Capital One", "one", False), ("Acme Robotics", "acme", True), ("Acmeco", "acme", False),
+])
+def test_company_names_match_as_typed(company, wanted, hit):
+    from autoapply.companies import matches
+    assert matches(company, wanted) is hit
+
+
+def _scored(make_ctx):
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    score(ctx, RunStats())
+    return ctx
+
+
+def test_a_run_can_take_only_some_companies_or_leave_some_out(make_ctx, transport):
+    ctx = _scored(make_ctx)
+    ctx.run_companies = (["acme", "Gamma"], [])
+    assert set(fill_candidates(ctx, None)) == {"greenhouse:acme:1001", "ashby:gamma:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+    ctx.run_companies = ([], ["airbnb"])
+    assert "greenhouse:airbnb:7826337" not in fill_candidates(ctx, None)
+    ctx.run_companies = None
+    assert len(fill_candidates(ctx, None)) == 3
+
+
+def test_only_the_chosen_companies_are_fetched_and_scored(make_ctx, transport):
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    ctx.run_companies = (["acme"], [])
+    done = enrich(ctx, RunStats(), None, clients()[0])
+    assert done and all(ctx.ledger.get(k).get("company") == "Acme" for k in done)
+    assert ctx.ledger.get("ashby:gamma:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").state == "discovered"   # untouched
+
+
+def test_a_paused_company_is_scored_but_filled_only_after_the_pause(make_ctx, transport):
+    from datetime import date, timedelta
+    from autoapply.companies import PAUSED_KEY, pause, resume
+    from autoapply.pipeline import status_report
+    ctx = _scored(make_ctx)
+    pause(ctx, "Airbnb")
+    st = RunStats()
+    keys = fill_candidates(ctx, None, st)
+    assert "greenhouse:airbnb:7826337" not in keys and st["company_paused"] == 1
+    assert ctx.ledger.get("greenhouse:airbnb:7826337").state == "scored"            # waits, nothing lost
+    assert "Airbnb paused until" in status_report(ctx)
+    old = ctx.state_get(PAUSED_KEY)                                                   # 30 days later
+    for v in old.values():
+        v["until"] = (date.today() - timedelta(days=1)).isoformat()
+    ctx.state_set(PAUSED_KEY, old)
+    assert "greenhouse:airbnb:7826337" in fill_candidates(ctx, None)
+    pause(ctx, "airbnb")
+    assert resume(ctx, "AIRBNB") and "greenhouse:airbnb:7826337" in fill_candidates(ctx, None)
+
+
+def test_companies_command(make_ctx, transport, capsys):
+    from autoapply.companies_cmd import companies_command
+    ctx = _scored(make_ctx)
+    assert companies_command(ctx, "pause", "airbnb", 30) == 0
+    out = capsys.readouterr().out
+    assert "Airbnb (1 waiting)" in out and "paused until" in out
+    companies_command(ctx, "list", None, 30)
+    out = capsys.readouterr().out
+    assert "airbnb paused until" in out and "Acme" in out
+    companies_command(ctx, "pause", "nosuchco", 30)
+    assert "No posting from a company named 'nosuchco'" in capsys.readouterr().out
+    companies_command(ctx, "resume", "airbnb", 30)
+    assert "pause ended" in capsys.readouterr().out

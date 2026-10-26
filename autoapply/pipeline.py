@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import ats, blockers
 from .ats.detect import parse_key
+from .companies import pauses, paused_in, selected, until_text
 from .context import Context
 from .filters import location_ok, prefilter, us_person_company
 from .h1b import H1BIndex
@@ -156,6 +157,7 @@ def enrich(ctx: Context, stats: RunStats, limit: int | None, clients: dict | Non
     clients = clients or ats.clients()
     # retries first: behind a large backlog and a --limit they would otherwise never come up
     rows = [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "enrich"] + led.postings_in([DISCOVERED])
+    rows = [r for r in rows if selected(ctx, r.get("company"))]          # this run's --company / --skip-company
     done: list[str] = []
     for row in rows:
         if limit is not None and len(done) >= limit:
@@ -275,6 +277,7 @@ def score(ctx: Context, stats: RunStats, limit: int | None = None, rescore: bool
     led, profile = ctx.ledger, ctx.profile
     rows = (led.postings_in([ENRICHED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "score"]
             + led.postings_in([HELD]))
+    rows = [r for r in rows if selected(ctx, r.get("company"))]
     calibration = ctx.calibration_examples()
     passed: list[str] = []
     calls = 0
@@ -354,8 +357,9 @@ def role_for(ctx: Context, key: str) -> str | None:
     return s.get("role_family") if s else None
 
 
-def fill_candidates(ctx: Context, limit: int | None) -> list[str]:
+def fill_candidates(ctx: Context, limit: int | None, stats: RunStats | None = None) -> list[str]:
     led = ctx.ledger
+    active_pauses = pauses(ctx)
     rows = led.postings_in([SCORED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "fill"]
     cap = ctx.profile.filters.per_company_cap
     taken: Counter = Counter()
@@ -369,6 +373,12 @@ def fill_candidates(ctx: Context, limit: int | None) -> list[str]:
             break
         if not_targeted(ctx, r):
             continue                     # filters narrowed since it was scored: not filled now
+        if not selected(ctx, r.get("company")):
+            continue                     # not one of this run's companies
+        if paused_in(active_pauses, r.get("company")):
+            if stats is not None:
+                stats["company_paused"] += 1
+            continue                     # paused by you (30-day limit): scored, filled after the pause
         if led.score(r.posting_key) is None:
             continue                     # never fill what was not scored (blockers, fit)
         if cap and taken[r.get("company")] >= cap:
@@ -400,7 +410,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
         enrich(ctx, stats, limit)
         score(ctx, stats, limit)
         if not no_fill and "stopped" not in stats:
-            keys = fill_candidates(ctx, limit)
+            keys = fill_candidates(ctx, limit, stats)
             if keys:
                 if fill_runner is None:
                     from .browser.fill import run_fill
@@ -443,6 +453,7 @@ RUN_LINES = [
     ("needs_input", "filled -> Needs input"),
     ("stuck", "Stuck"),
     ("corrected", "forms where Simplify's visa answer was replaced by yours"),
+    ("company_paused", "waiting: company paused by you (30-day limit), filled after the pause"),
     ("error", "errors (retried next run)"),
     ("written_back", "status changes written to job-monitor"),
 ]
@@ -502,6 +513,10 @@ def status_report(ctx: Context) -> str:
         counts_json = last.get("counts_json")
         lines += run_breakdown(json.loads(counts_json) if counts_json else {})
         lines.append("  " + cost_line(led.run_spend(last)))
+    active = pauses(ctx)
+    if active:
+        lines.append("Paused companies (scored, not filled): "
+                     + "; ".join(until_text(v) for v in sorted(active.values(), key=lambda v: v["until"])))
     pend = led.db.execute("SELECT COUNT(*) FROM writeback_queue WHERE done_at IS NULL").fetchone()[0]
     if pend:
         lines.append(f"Write-backs pending: {pend}")
