@@ -61,6 +61,8 @@ autoapply requeue --lane tested                  # after testing: let test-appro
 autoapply browser [--url URL]                    # open the tool's browser (Simplify login, profile)
 autoapply workday [login | open <company>]       # Workday: the login it uses, companies that need an account
 autoapply mail [login | test | recent]           # read-only mailbox for security codes and Workday emails
+autoapply companies [pause|resume "<name>"] [--days 30]  # pause a company (30-day limit), see company names
+autoapply run --company "capital one" --skip-company acme  # this run: only / not these companies
 autoapply schedule install|remove|show           # Windows Task Scheduler
 autoapply health                                 # the pre-run checks on their own
 ```
@@ -158,6 +160,31 @@ Cygnus counts an application as sent only when the board confirms it: a confirma
 
 - **Security code:** Greenhouse, and Ashby-style boards, sometimes email a code before accepting an application. With [mail access](#mail-codes-and-workday-emails), Cygnus reads the code after you click **Approve**, types it and finishes; **Approve all** runs through codes unattended. Without mail, or if no email arrives within `mail.wait_s` (180 s), the tab stays open and the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**, or **Get it from my email** for a late email. A wrong code shows the board's message, and you can try again.
 - **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
+
+### Choosing companies
+
+**For one run:** `--company` and `--skip-company` choose which companies a run works on. Both can be repeated or comma-separated, and they work with `--limit`, `--review` and `--test`:
+
+```
+autoapply run --review --company "capital one" --company nvidia --limit 10
+autoapply run --review --skip-company "capital one, acme"
+```
+
+- Only those postings are fetched, scored and filled. Everything else waits, untouched, for a later run.
+- A name matches the company's own name or its first words, and spaces don't matter: "capital one" matches "Capital One Financial" and "CapitalOne".
+- `autoapply companies` lists the companies with postings waiting, so you can see the exact names.
+
+**Pausing a company** (for example, you've reached its limit of applications per 30 days):
+
+```
+autoapply companies pause "capital one"            # 30 days; --days 14 for another length
+autoapply companies                                # what is paused, until when
+autoapply companies resume "capital one"           # end it early
+```
+
+- A paused company's postings are still scored but not filled. They wait in the queue and fill on the first run after the pause ends; nothing needs undoing.
+- In review, its cards show "⏸ … paused until …". **Approve all** leaves them out; clicking **Approve** on one still sends it.
+- `autoapply status` lists active pauses.
 
 ### Mail: codes and Workday emails
 

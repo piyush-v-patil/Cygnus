@@ -409,3 +409,18 @@ def test_damaged_resume_pdf_is_a_clear_problem(tmp_path):
     bad.write_bytes(b"%PDF-1.4 not really")
     with pytest.raises(ConfigError, match="could not be read"):
         extract_text(bad)
+
+
+def test_run_company_flags(profile_dir, monkeypatch, capsys):
+    import autoapply.health as health
+    import autoapply.pipeline as pl
+    from autoapply.health import Report
+    seen = {}
+    monkeypatch.setattr(health, "run_health", lambda ctx, **kw: Report())
+    monkeypatch.setattr(pl, "run", lambda ctx, **kw: seen.setdefault("c", ctx.run_companies) and {})
+    assert main(["--profile-dir", str(profile_dir.root), "run", "--no-fill", "--company", "acme, gamma",
+                 "--company", "nvidia", "--skip-company", "zeta"]) == 0
+    assert seen["c"] == (["acme", "gamma", "nvidia"], ["zeta"])
+    captured = capsys.readouterr()
+    assert "This run: only" in captured.out and "This run leaves out: zeta" in captured.out
+    assert "no postings waiting for 'nvidia'" in captured.err

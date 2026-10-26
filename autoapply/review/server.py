@@ -130,7 +130,10 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         key = app_row["posting_key"]
         p = led.get(key)
         sc = led.score(key) or {}
+        from ..companies import paused, until_text
+        pause = paused(ctx, p.get("company") if p else None)
         return {"app": app_row, "p": p.data if p else {}, "state": p.state if p else "",
+                "paused": until_text(pause, p.get("company")) if pause else None,
                 "live": ctx.has_live_tab(key),
                 "score": sc, "waited": _ago(app_row.get("updated_at")),
                 "plan": app_row.get("fill_plan") or [], "missing": app_row.get("missing") or []}
@@ -285,10 +288,16 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
     @app.post("/approve-all")
     async def approve_all(csrf: str = Form(""), ids: str = Form("")):
         check_csrf(csrf)
-        msgs = []
+        from ..companies import pauses, paused_in
+        active = pauses(ctx)
+        msgs, held = [], []
         for i in [int(x) for x in ids.split(",") if x.strip().isdigit()]:
             a = ctx.ledger.application(app_id=i)
             if a is None or ctx.ledger.get(a["posting_key"]).state != READY:
+                continue
+            company = ctx.ledger.get(a["posting_key"]).get("company")
+            if paused_in(active, company):         # you paused it: only its own Approve sends it
+                held.append(company or a["posting_key"])
                 continue
             try:                                       # each still submits on its own
                 msgs.append(await _submit(a["posting_key"]))
@@ -297,7 +306,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             except Exception as e:  # noqa: BLE001 - one failure must not lose the others' results
                 log.error("approve-all: %s failed: %s: %s", a["posting_key"], type(e).__name__, e, exc_info=e)
                 msgs.append(f"{a['posting_key']}: not submitted ({type(e).__name__})")
-        return _back(READY, f"{len(msgs)} processed: " + " | ".join(msgs))
+        note = (f" Left for you (company paused): {', '.join(sorted(set(held)))}." if held else "")
+        return _back(READY, f"{len(msgs)} processed: " + " | ".join(msgs) + note)
 
     @app.post("/app/{app_id}/reject")
     async def reject(app_id: int, csrf: str = Form(""), lane: str = Form(READY)):

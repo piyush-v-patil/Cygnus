@@ -134,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="keep the filled forms open and review them right away in the same session")
     r.add_argument("--port", type=int, help="review page port (with --review)")
     r.add_argument("--no-browser", action="store_true", help="with --review: do not open the review page")
+    r.add_argument("--company", action="append", metavar="NAME",
+                   help="work only on this company this run (repeat, or comma-separated)")
+    r.add_argument("--skip-company", action="append", metavar="NAME",
+                   help="leave this company out of this run (repeat, or comma-separated)")
     rv = sub.add_parser("review", help="open the review UI")
     rv.add_argument("--port", type=int)
     rv.add_argument("--no-browser", action="store_true", help="do not open the UI in a web browser")
@@ -151,6 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("workday", help="Workday accounts: the login the tool uses, and which companies need one")
     w.add_argument("action", nargs="?", choices=["list", "login", "open"], default="list")
     w.add_argument("company", nargs="?", help="with open: the company (tenant) whose sign-up page to open")
+    co = sub.add_parser("companies", help="pause a company (30-day limit reached), resume it, see names")
+    co.add_argument("action", nargs="?", choices=["list", "pause", "resume"], default="list")
+    co.add_argument("name", nargs="?", help="the company, as in `autoapply companies`")
+    co.add_argument("--days", type=int, default=30, help="with pause: how many days (default 30)")
     m = sub.add_parser("mail", help="the mailbox security codes and Workday links are read from")
     m.add_argument("action", nargs="?", choices=["test", "login", "recent"], default="test")
     return p
@@ -245,6 +253,10 @@ def _dispatch(args, paths: Paths) -> int:
         from .workday_cmd import workday_command
         return workday_command(Context(paths), args.action, args.company)
 
+    if args.cmd == "companies":
+        from .companies_cmd import companies_command
+        return companies_command(Context(paths), args.action, args.name, args.days)
+
     if args.cmd == "mail":
         from .mail_cmd import mail_command
         return mail_command(Context(paths), args.action)
@@ -299,6 +311,7 @@ def _dispatch(args, paths: Paths) -> int:
                 return 1
             for w in rep.warnings:
                 print(f"Note: {w}", file=sys.stderr)
+            _choose_companies(ctx, args)
             if args.review and not args.no_fill:
                 from .review.server import run_and_review
                 return run_and_review(ctx, limit=args.limit, port=args.port or ctx.profile.review.port,
@@ -327,6 +340,25 @@ def _dispatch(args, paths: Paths) -> int:
                 print(f"Note: {w}", file=sys.stderr)
             return serve(ctx, port=args.port or ctx.profile.review.port, open_browser=not args.no_browser)
     return 1
+
+
+def _choose_companies(ctx, args) -> None:
+    """This run's --company / --skip-company, with a note on what they cover."""
+    from .companies import matches, split_names
+    only, skip = split_names(getattr(args, "company", None)), split_names(getattr(args, "skip_company", None))
+    if not only and not skip:
+        return
+    ctx.run_companies = (only, skip)
+    names = {r.get("company") for r in ctx.ledger.postings_in(
+        ["discovered", "enriched", "scored", "held", "error"]) if r.get("company")}
+    for w in only + skip:
+        if not any(matches(c, w) for c in names):
+            print(f"Note: no postings waiting for {w!r} (see `autoapply companies` for the names)", file=sys.stderr)
+    if only:
+        hit = sorted({c for c in names if any(matches(c, w) for w in only)})
+        print(f"This run: only {', '.join(hit) or ', '.join(only)}")
+    if skip:
+        print(f"This run leaves out: {', '.join(skip)}")
 
 
 def _next_step(ctx, test: bool) -> str:

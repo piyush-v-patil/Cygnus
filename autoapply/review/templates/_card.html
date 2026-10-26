@@ -9,6 +9,7 @@
     {% if lane == 'needs_input' %} · waiting {{c.waited}}{% endif %}</div>
   {% if c.plan|selectattr('note')|list %}<div class="stuck" style="color:var(--warn)">⚠ A work-authorization or sponsorship answer needs your eye — see the marked field below.</div>{% endif %}
   {% if c.score and c.score.reasons %}<div class="reasons">{{ c.score.reasons|join(' · ') }}</div>{% endif %}
+  {% if c.paused %}<div class="stuck" style="color:var(--warn)">⏸ {{c.paused}} (you paused it: Approve all leaves it out; Approve still sends it).</div>{% endif %}
   {% if a.stuck_reason %}<div class="stuck">Stuck: {{a.stuck_reason}}</div>{% endif %}
   {% if lane == 'stuck' and (a.stuck_reason or '').startswith('email_code') %}
     {% if c.live %}
