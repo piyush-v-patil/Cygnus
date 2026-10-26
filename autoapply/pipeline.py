@@ -5,8 +5,10 @@ anywhere (budget, crash, PC asleep) resumes from where it was next time.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -30,14 +32,41 @@ WRITEBACK_SKIPS = {"low_fit", "us_person_required", "no_sponsorship", "yoe", "bl
 
 
 class RunStats(Counter):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.timing: dict[str, float] = {}                       # stage -> seconds
+        self.form_times: list[tuple[str, float, str]] = []       # (board, seconds, "Company - Title")
+
     def skipped(self, reason: str):
         self["skipped"] += 1
         self[f"skip:{reason}"] += 1
 
+    @contextlib.contextmanager
+    def timed(self, stage: str):
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            self.timing[stage] = self.timing.get(stage, 0.0) + time.monotonic() - t0
+
     def as_dict(self) -> dict:
         d = {k: v for k, v in self.items() if not k.startswith("skip:")}
         d["skipped_by_reason"] = {k[5:]: v for k, v in self.items() if k.startswith("skip:")}
+        if self.timing or self.form_times:
+            d["timing"] = self.timing_summary()
         return d
+
+    def timing_summary(self) -> dict:
+        t = {k: round(v, 1) for k, v in self.timing.items()}
+        forms = self.form_times
+        avg = lambda xs: round(sum(xs) / len(xs), 1) if xs else None        # noqa: E731
+        wd = [s for b, s, _ in forms if b == "workday"]
+        other = [s for b, s, _ in forms if b != "workday"]
+        t.update(forms=len(forms), form_avg=avg([s for _, s, _ in forms]), workday_avg=avg(wd), other_avg=avg(other))
+        if forms:
+            label, secs = max(((lab, s) for _, s, lab in forms), key=lambda x: x[1])
+            t["slowest"] = [label, round(secs, 1)]
+        return t
 
 
 # ------------------------------------------------------------------- sync --
@@ -399,23 +428,28 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
     run_id = led.start_run("run")
     stats = RunStats()
     error = None
+    started = time.monotonic()
     try:
         back = led.recover_interrupted()
         if back:
             stats["interrupted"] = len(back)
             log.info("%d application(s) were mid-fill when the last run stopped; they are queued again", len(back))
         retry_stuck(ctx, stats)
-        sync(ctx, stats)
-        release_low_fit(ctx, stats)
-        enrich(ctx, stats, limit)
-        score(ctx, stats, limit)
+        with stats.timed("sync"):
+            sync(ctx, stats)
+            release_low_fit(ctx, stats)
+        with stats.timed("fetch"):
+            enrich(ctx, stats, limit)
+        with stats.timed("scoring"):
+            score(ctx, stats, limit)
         if not no_fill and "stopped" not in stats:
             keys = fill_candidates(ctx, limit, stats)
             if keys:
                 if fill_runner is None:
                     from .browser.fill import run_fill
                     fill_runner = run_fill
-                fill_runner(ctx, keys, stats)
+                with stats.timed("filling"):
+                    fill_runner(ctx, keys, stats)
     except Exception as e:  # noqa: BLE001 - recorded on the run, then re-raised
         error = f"{type(e).__name__}: {e}"
         raise
@@ -423,6 +457,7 @@ def run(ctx: Context, limit: int | None = None, no_fill: bool = False, fill_runn
         if ctx.writeback is not None:
             stats["written_back"] += ctx.writeback.flush()
         ctx.notifier.flush_needs_input()
+        stats.timing["total"] = time.monotonic() - started
         counts = stats.as_dict()
         led.end_run(run_id, counts, error)
         if error is None:
@@ -485,6 +520,36 @@ PURPOSE_LABELS = {"score": "scoring", "answer": "form answers", "cover_letter": 
                   "wizard": "setup"}
 
 
+def duration(seconds: float | None) -> str:
+    """42s, 3m 05s, 1h 02m."""
+    s = int(round(seconds or 0))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
+def time_line(timing: dict) -> str:
+    """"Time: 18m 32s for 12 applications (1m 33s each; Workday 5m 10s each, other boards 48s) · ..."."""
+    n = timing.get("forms") or 0
+    head = f"Time: {duration(timing.get('total'))}"
+    if n:
+        each = f"{duration(timing['form_avg'])} each"
+        if timing.get("workday_avg") and timing.get("other_avg"):
+            each += f"; Workday {duration(timing['workday_avg'])} each, other boards {duration(timing['other_avg'])}"
+        head += f" for {n} application{'s' if n != 1 else ''} ({each})"
+    else:
+        head += " (no applications filled)"
+    stages = [f"{label} {duration(timing[k])}" for k, label in
+              (("sync", "syncing"), ("fetch", "fetching"), ("scoring", "scoring"), ("filling", "filling"))
+              if timing.get(k)]
+    slow = timing.get("slowest")
+    if slow and n > 1:
+        stages.append(f"slowest: {slow[0]} ({duration(slow[1])})")
+    return " · ".join([head, *stages])
+
+
 def cost_line(spend: dict, what: str = "this run") -> str:
     """"Claude cost this run: $0.42 (scoring $0.10, 85 calls · form answers $0.27, 12 calls)"."""
     parts = [f"{PURPOSE_LABELS.get(p, p)} ${c:.2f}, {n} call{'s' if n != 1 else ''}"
@@ -511,7 +576,10 @@ def status_report(ctx: Context) -> str:
         lines.append(f"Last run: {last['started_at']} -> {last['ended_at'] or 'running/crashed'}"
                      + (f" (error: {last['error']})" if last.get("error") else ""))
         counts_json = last.get("counts_json")
-        lines += run_breakdown(json.loads(counts_json) if counts_json else {})
+        last_counts = json.loads(counts_json) if counts_json else {}
+        lines += run_breakdown(last_counts)
+        if last_counts.get("timing"):
+            lines.append("  " + time_line(last_counts["timing"]))
         lines.append("  " + cost_line(led.run_spend(last)))
     active = pauses(ctx)
     if active:

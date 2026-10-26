@@ -318,7 +318,9 @@ def _dispatch(args, paths: Paths) -> int:
                                       open_browser=not args.no_browser)
             counts = run(ctx, limit=args.limit, no_fill=args.no_fill)
         print(_summary(counts))
-        from .pipeline import cost_line
+        from .pipeline import cost_line, time_line
+        if counts.get("timing"):
+            print(time_line(counts["timing"]))
         last = ctx.ledger.last_run()
         if last:
             print(cost_line(ctx.ledger.run_spend(last)))
@@ -377,7 +379,7 @@ def _next_step(ctx, test: bool) -> str:
 
 
 def _summary(counts: dict) -> str:
-    parts = [f"{k}={v}" for k, v in sorted(counts.items()) if k != "skipped_by_reason" and v]
+    parts = [f"{k}={v}" for k, v in sorted(counts.items()) if k not in ("skipped_by_reason", "timing") and v]
     sk = counts.get("skipped_by_reason") or {}
     if sk:
         parts.append("skipped: " + ", ".join(f"{k}={v}" for k, v in sorted(sk.items())))
