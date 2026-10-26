@@ -465,8 +465,10 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
 
 
 def session_cost(ctx, sess: Session) -> str:
-    from ..pipeline import cost_line
-    return cost_line(ctx.ledger.spend_between(sess.started_at), "during review")
+    from ..pipeline import cost_line, duration
+    took = (datetime.now(timezone.utc) - datetime.strptime(sess.started_at, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc)).total_seconds()
+    return f"Review took {duration(took)}. " + cost_line(ctx.ledger.spend_between(sess.started_at), "during review")
 
 
 def finish_session(ctx, sess: Session) -> None:
@@ -511,7 +513,10 @@ def run_and_review(ctx, limit: int | None = None, port: int = 8765, open_browser
         try:
             counts = await asyncio.to_thread(run_pipeline, ctx, limit, False, fill_in_this_session)
             from ..cli import _summary
+            from ..pipeline import time_line
             print(_summary(counts))
+            if counts.get("timing"):
+                print(time_line(counts["timing"]))
         except Exception as e:  # noqa: BLE001 - what is already queued can still be reviewed
             log.exception("the run failed")
             print(f"The run stopped early ({type(e).__name__}: {e}); opening the review queue anyway.")

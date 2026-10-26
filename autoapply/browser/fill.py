@@ -579,6 +579,7 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
                 log.info("[%d/%d] %s - %s: waiting, signing in to %s's Workday failed", done["n"], total,
                          row.get("company"), row.get("title"), company_of(key))
                 return
+        started = time.monotonic()
         log.info("[%d/%d] %s - %s", done["n"], total, row.get("company"), row.get("title"))
         if row.state == ERROR:
             led.set_state(key, FILLING, None, "retry")
@@ -634,6 +635,9 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             log.info("    -> Error, will be retried next run: %s", str(e).splitlines()[0][:200])
             fail(ctx, key, "fill", f"{type(e).__name__}: {e}", stats)
         finally:
+            if hasattr(stats, "form_times"):          # how long this application took, whatever came of it
+                stats.form_times.append(("workday" if key.startswith("workday:") else "other",
+                                         time.monotonic() - started, f"{row.get('company')} - {row.get('title')}"))
             # with `run --review`, a filled (or stuck) form stays open so approval can submit
             # it as it stands; past keep_tabs_max it closes and approval refills it instead
             lane = led.get(key).state

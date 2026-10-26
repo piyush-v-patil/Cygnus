@@ -690,3 +690,43 @@ def test_companies_command(make_ctx, transport, capsys):
     assert "No posting from a company named 'nosuchco'" in capsys.readouterr().out
     companies_command(ctx, "resume", "airbnb", 30)
     assert "pause ended" in capsys.readouterr().out
+
+
+def test_time_line_formats():
+    from autoapply.pipeline import duration, time_line
+    assert [duration(s) for s in (4.2, 65, 3725)] == ["4s", "1m 05s", "1h 02m"]
+    t = {"total": 1112, "sync": 4, "fetch": 62, "scoring": 130, "filling": 916, "forms": 12, "form_avg": 93,
+         "workday_avg": 310, "other_avg": 48, "slowest": ["Capital One - SWE", 425]}
+    assert time_line(t) == ("Time: 18m 32s for 12 applications (1m 33s each; Workday 5m 10s each, other boards 48s)"
+                            " · syncing 4s · fetching 1m 02s · scoring 2m 10s · filling 15m 16s"
+                            " · slowest: Capital One - SWE (7m 05s)")
+    assert time_line({"total": 185, "fetch": 20, "forms": 0}) == "Time: 3m 05s (no applications filled) · fetching 20s"
+
+
+def test_a_run_records_its_stage_and_form_times(make_ctx, transport, monkeypatch):
+    import json as _json
+    import autoapply.pipeline as pl
+    from autoapply.pipeline import status_report
+    ctx = make_ctx()
+    cl, _ = clients()
+    monkeypatch.setattr(pl.ats, "clients", lambda http=None: cl)
+
+    def fake_fill(ctx_, keys, stats):
+        stats.form_times += [("workday", 300.0, "Acme - SWE"), ("other", 40.0, "Gamma - Eng"), ("other", 50.0, "B - C")]
+    counts = run(ctx, fill_runner=fake_fill)
+    t = counts["timing"]
+    assert {"sync", "fetch", "scoring", "filling", "total"} <= set(t)
+    assert t["forms"] == 3 and t["form_avg"] == 130.0 and t["workday_avg"] == 300.0 and t["other_avg"] == 45.0
+    assert t["slowest"] == ["Acme - SWE", 300.0]
+    stored = _json.loads(ctx.ledger.last_run()["counts_json"])
+    assert stored["timing"]["forms"] == 3
+    assert "Time: " in status_report(ctx) and "for 3 applications (2m 10s each" in status_report(ctx)
+
+
+def test_discord_summary_says_how_long_it_took(make_ctx):
+    ctx = make_ctx()
+    sent = []
+    ctx.notifier.discord.enabled = True
+    ctx.notifier.discord.send = lambda text: sent.append(text) or True
+    ctx.notifier.run_summary({"timing": {"total": 600, "forms": 4, "form_avg": 90}}, 1.0, 5.0, run_cost=0.2)
+    assert "Took 10m 00s for 4 applications (1m 30s each)" in sent[0]

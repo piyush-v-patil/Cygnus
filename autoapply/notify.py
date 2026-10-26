@@ -140,6 +140,7 @@ class Notifier:
         self._immediate_sent = 0
 
     def run_summary(self, counts: dict, spend: float, budget: float, run_cost: float | None = None):
+        timing = counts.get("timing") or {}
         skipped = counts.get("skipped_by_reason", {})
         lines = ["**AutoApply run finished**",
                  f"Scored {counts.get('scored', 0)} · Ready {counts.get('ready', 0)} · "
@@ -154,6 +155,11 @@ class Notifier:
             lines.append(f"Closed: {counts['closed']}")
         if counts.get("stopped"):
             lines.append(f"Stopped early: {counts['stopped']}")
+        if timing.get("total"):
+            from .pipeline import duration
+            n = timing.get("forms") or 0
+            lines.append(f"Took {duration(timing['total'])}" + (
+                f" for {n} application{'s' if n != 1 else ''} ({duration(timing.get('form_avg'))} each)" if n else ""))
         lines.append((f"This run cost ${run_cost:.2f} · " if run_cost is not None else "")
                      + f"Spend this month: ${spend:.2f} of ${budget:.2f}")
         self.discord.send("\n".join(lines))
