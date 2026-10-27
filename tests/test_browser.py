@@ -243,3 +243,14 @@ def test_replay_mismatch_goes_stuck(bctx):
             return await submit(bctx, bs, GH)
     result = asyncio.run(go())
     assert result["state"] == "stuck" and "vanished" in result["detail"]
+
+
+def test_work_preferences_fill_before_claude(bctx):
+    bctx.profile.work.onsite = True
+    seed(bctx, GH)
+    asyncio.run(fill_many(bctx, [GH], RunStats()))
+    app = bctx.ledger.application(GH)
+    assert bctx.ledger.get(GH).state == "ready", app["missing"]
+    entry = next(e for e in app["fill_plan"] if e["label"].startswith("Are you willing"))
+    assert entry["source"] == "work_prefs" and entry["value"] == "Yes"
+    assert entry["facts_used"] == ["you will work on-site"]

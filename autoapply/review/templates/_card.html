@@ -28,11 +28,12 @@
     {% for m in c.missing %}<div class="q"><label>{{m.label}} <span class="why">({{m.reason}})</span></label>
       {% set n = 'a__' ~ m.key %}
       {% if m.kind == 'checkbox_group' %}{% for o in m.options %}<label style="font-weight:400"><input type="checkbox" name="{{n}}" value="{{o}}"> {{o}}</label>{% endfor %}
-      {% elif m.options %}<select name="{{n}}"><option value="">— choose —</option>{% for o in m.options %}<option>{{o}}</option>{% endfor %}</select>
-      {% elif m.answer_kind == 'yes_no' %}<select name="{{n}}"><option value="">— choose —</option><option>Yes</option><option>No</option></select>
+      {% elif m.options %}<select name="{{n}}"><option value="">— choose —</option>{% for o in m.options %}<option{% if o == m.suggested %} selected{% endif %}>{{o}}</option>{% endfor %}</select>
+      {% elif m.answer_kind == 'yes_no' %}<select name="{{n}}"><option value="">— choose —</option>{% for o in ['Yes', 'No'] %}<option{% if o == m.suggested %} selected{% endif %}>{{o}}</option>{% endfor %}</select>
       {% elif m.answer_kind == 'long_text' %}<textarea name="{{n}}">{{m.suggested or ''}}</textarea>
-      {% elif m.answer_kind == 'number' %}<input type="number" name="{{n}}">
+      {% elif m.answer_kind == 'number' %}<input type="number" name="{{n}}" value="{{m.suggested or ''}}">
       {% else %}<input type="text" name="{{n}}" value="{{m.suggested or ''}}">{% endif %}
+      {% if m['from'] %}<div class="from">pre-filled from: <b>{{m['from']}}</b> — save to accept, or change it</div>{% endif %}
     </div>{% endfor %}
     <div class="actions"><button class="primary" name="then" value="show">Save &amp; open the form to check</button>
       <button name="then" value="save">Save answers</button></div>

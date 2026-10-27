@@ -215,6 +215,20 @@ class MailCfg(_Strict):
     wait_s: float = Field(180, ge=10, le=900)
 
 
+class WorkCfg(_Strict):
+    """Standing answers to work-preference questions (autoapply/questions.py).
+    null means "ask me": that question goes to Needs input as before."""
+    relocate: bool | None = None               # "Are you willing to relocate?"
+    anywhere_in_us: bool | None = None         # "...open to any of our US locations?"
+    onsite: bool | None = None                 # "...able to work on-site / in office 5 days a week?"
+    hybrid: bool | None = None
+    remote: bool | None = None
+    relocation_assistance: bool | None = None  # "Will you need relocation assistance?"
+    # every employer you have had is on your resume, so "have you worked for <company>?"
+    # is No when the resume does not name it (and yours to answer when it does)
+    only_resume_employers: bool = False
+
+
 class Profile(_Strict):
     sources: list[SourceCfg]
     filters: FiltersCfg = FiltersCfg()
@@ -229,6 +243,7 @@ class Profile(_Strict):
     review: ReviewCfg = ReviewCfg()
     workday: WorkdayCfg = WorkdayCfg()
     mail: MailCfg = MailCfg()
+    work: WorkCfg = WorkCfg()
 
     @property
     def writeback_source(self) -> SourceCfg | None:

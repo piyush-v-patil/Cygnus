@@ -10,7 +10,7 @@ Cygnus applies to software jobs for you, and you approve every application befor
 
 Everything runs on your PC. The repository contains no personal data. Your resumes, answers, keys and history live in a private profile folder, `%USERPROFILE%\.autoapply\` by default.
 
-> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file and a work-authorization or sponsorship answer that contradicts your visa answers: that one is replaced with yours, marked on the review card, and you get one warning per run to fix your Simplify profile. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
+> **Rules the tool follows.** It never makes up a fact. Claude may write prose answers from your resume, but a factual answer (yes/no, numbers, dates, eligibility) must come from Simplify, your saved answers, your work preferences, or a quote from your resume. If none of those has it, the application waits in *Needs input*. Values Simplify fills are never overwritten, except the resume file and a work-authorization or sponsorship answer that contradicts your visa answers: that one is replaced with yours, marked on the review card, and you get one warning per run to fix your Simplify profile. CAPTCHAs and login walls are never bypassed: those applications go to *Stuck*.
 
 ---
 
@@ -76,7 +76,7 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 | Lane | What you do |
 |---|---|
 | **Ready** | Check the fields. Each one is labelled with its source: Simplify, Saved answer, Claude (with the resume evidence or facts it used), or You. **Open form to check** shows the real application in the tool's browser, where you can change anything. Then **Approve & submit** (it sends the form as it stands) or **Reject**. If you sent it yourself in the form's tab (after a code or a check there, say), click **I submitted it** to record it. *Approve all visible* still submits them one at a time. |
-| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. **I submitted it** records one you sent yourself. **Fill again** (or **Fill all again**) queues it to be filled from scratch on the next run with your saved answers, for example when its tab is gone. |
+| **Needs input** | Questions about you that Simplify, your saved answers and Claude may not answer (work authorization, salary, start date, consent...). A question worded like one you answered before comes [pre-filled with that answer](#answers-you-give-once), marked where it came from. Answer them on the card and click **Save & open the form to check**, or click **Open form**, answer in the form itself and click **I answered in the form**. Either way the answers are saved to `answers.yaml`, complete any other queued application that asks the same question, and the application moves to Ready. Answering never submits: you approve from Ready after checking the form. **I submitted it** records one you sent yourself. **Fill again** (or **Fill all again**) queues it to be filled from scratch on the next run with your saved answers, for example when its tab is gone. |
 | **Stuck** | A CAPTCHA, login wall, Simplify failure, failed upload, or a form that changed. **Open form** brings the tab up, or reopens it and refills it from the plan. Finish it by hand, then click **I submitted it** (a screenshot is recorded) or **Give up**. **Fill again** (or **Fill all again**) queues it to be filled from scratch on the next run. Temporary trouble (Simplify not ready, a page that did not load, a timeout) is filled again automatically by the next run, at most twice per application. |
 | **History** | Every submitted application, with its saved copy. |
 
@@ -161,6 +161,30 @@ Cygnus counts an application as sent only when the board confirms it: a confirma
 - **Security code:** Greenhouse, and Ashby-style boards, sometimes email a code before accepting an application. With [mail access](#mail-codes-and-workday-emails), Cygnus reads the code after you click **Approve**, types it and finishes; **Approve all** runs through codes unattended. Without mail, or if no email arrives within `mail.wait_s` (180 s), the tab stays open and the card goes to *Stuck* with a box for the code, and Discord gets a ping. Type the code and click **Enter code & submit**, or **Get it from my email** for a late email. A wrong code shows the board's message, and you can try again.
 - **No confirmation within 30 seconds:** the card goes to *Stuck* (`submit_unconfirmed`) with the tab open. Check it, and click **I submitted it** if it went through.
 
+### Answers you give once
+
+**Work preferences.** Forms keep asking the same things. Set them once in `profile.yaml` (or in `autoapply setup`), and Cygnus answers them itself, marked *Your work preferences* on the card:
+
+```yaml
+work:
+  relocate: true                 # "Are you willing to relocate / move to Austin?"
+  anywhere_in_us: true           # "...open to any of our US office locations?"
+  onsite: true                   # "...able to work on-site / in office 5 days a week?"
+  hybrid: true
+  remote: true
+  relocation_assistance: false   # "Will you need relocation assistance?" -> No
+  only_resume_employers: true    # "Have you ever worked for <company>?" -> No, unless your resume names it
+```
+
+- Leave a line out (or `null`) to answer that kind of question yourself, as before.
+- Only yes/no questions are answered, and only when they ask what you are willing or able to do. "Do you currently live in Austin?" is a fact, and it stays yours.
+- "Have you worked for <company>?" is answered No only when the resume does not name the company. When it does, the question is yours. Questions about relatives, referrals, government work or past applications are never answered this way.
+- A saved answer to the exact same question still comes first.
+
+**Near matches in Needs input.** "Are you willing to relocate?" and "Open to relocation?" are the same question. When a Needs-input question has no exact saved answer, the card pre-fills the closest one you saved, with **pre-filled from: your answer to "…"** under it (or **your work preferences: …**). Check it and click **Save answers**: that one click accepts it, and saves the new wording too, so next time it is an exact match. Change it first if it doesn't fit. A near match only ever pre-fills a card; it never fills a form by itself.
+
+Neither ever touches a work-authorization, sponsorship, citizenship, clearance, criminal-history or demographic question. Those come from your visa answers or from you, every time.
+
 ### Choosing companies
 
 **For one run:** `--company` and `--skip-company` choose which companies a run works on. Both can be repeated or comma-separated, and they work with `--limit`, `--review` and `--test`:
@@ -240,6 +264,7 @@ Every Claude call's tokens and cost are recorded (`llm.pricing`; empty uses the 
 autoapply/
   cli.py            commands, run lock, logging (secrets redacted)
   config.py         profile.yaml schema (pydantic), secrets.env, answer bank
+  questions.py      near-match suggestions and work-preference answers (never legal/visa/EEO)
   ledger.py         SQLite ledger + posting state machine (posting_key is the primary key)
   pipeline.py       sync → prefilter → enrich → blockers → score → fill selection
   sources/          jobmonitor (raw jobs.json + h1b.json + companies.yaml), csv_links
