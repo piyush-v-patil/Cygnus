@@ -22,37 +22,28 @@
         {% if a.stuck_reason %}<span class="flag bad" title="{{a.stuck_reason}}">{{(a.stuck_reason.split(':')[0]).replace('_', ' ')}}</span>{% endif %}
       </div>
     </div>
-    <div class="head-actions">
+  </div>
+  <div class="card-actions">
     {% if lane == 'ready' %}
-      <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>Open form to check</button></form>
-      <form class="inline" method="post" action="/app/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="primary">Approve &amp; submit</button></form>
-      <details class="menu"><summary aria-label="More actions">More <span aria-hidden="true">▾</span></summary><div class="menu-list">
-        <form method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>I submitted it</button></form>
-        <hr>
-        <form method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="danger">Reject</button></form>
-      </div></details>
+    <form class="inline" method="post" action="/app/{{a.id}}/approve"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="primary">Approve &amp; submit</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button>Open form to check</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button title="You sent it yourself in the form's tab">I submitted it</button></form>
+    <form class="inline end" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="ready"><button class="danger">Reject</button></form>
     {% elif lane == 'needs_input' %}
-      <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button>Open form</button></form>
-      <details class="menu"><summary aria-label="More actions">More <span aria-hidden="true">▾</span></summary><div class="menu-list">
-        <form method="post" action="/app/{{a.id}}/from-form"><input type="hidden" name="csrf" value="{{csrf}}"><button title="Answer the questions in the form itself, then click this to pick the answers up">I answered in the form</button></form>
-        <form method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button>I submitted it</button></form>
-        <form method="post" action="/app/{{a.id}}/retry"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button title="Fill this application again from the start on the next run, with your saved answers">Fill again</button></form>
-        <hr>
-        <form method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button class="danger">Reject</button></form>
-      </div></details>
+    <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button>Open form</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/from-form"><input type="hidden" name="csrf" value="{{csrf}}"><button title="Answer the questions in the form itself, then click this to pick the answers up">I answered in the form</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/manual" onsubmit="return confirm('Record this application as submitted by you? Use this only if you already sent it in the form.')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button title="You sent it yourself in the form's tab">I submitted it</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/retry"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button title="Fill this application again from the start on the next run, with your saved answers">Fill again</button></form>
+    <form class="inline end" method="post" action="/app/{{a.id}}/reject"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="needs_input"><button class="danger">Reject</button></form>
     {% elif lane == 'stuck' %}
-      <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button class="primary">Open form</button></form>
-      <details class="menu"><summary aria-label="More actions">More <span aria-hidden="true">▾</span></summary><div class="menu-list">
-        <form method="post" action="/app/{{a.id}}/manual"><input type="hidden" name="csrf" value="{{csrf}}"><button>I submitted it</button></form>
-        {% if (a.stuck_reason or '').startswith(('submit_clicked_before', 'submit_interrupted', 'submit_unconfirmed')) %}
-        <form method="post" action="/app/{{a.id}}/approve" onsubmit="return confirm('Only if you checked and it was NOT sent: click Submit again for this application?')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><input type="hidden" name="force" value="1"><button>Not sent - Submit it again</button></form>
-        {% endif %}
-        <form method="post" action="/app/{{a.id}}/retry"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button title="Fill this application again from the start on the next run">Fill again</button></form>
-        <hr>
-        <form method="post" action="/app/{{a.id}}/giveup"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Give up</button></form>
-      </div></details>
+    <form class="inline" method="post" action="/app/{{a.id}}/open"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button class="primary">Open form</button></form>
+    <form class="inline" method="post" action="/app/{{a.id}}/manual"><input type="hidden" name="csrf" value="{{csrf}}"><button title="You finished and sent it yourself in the form's tab">I submitted it</button></form>
+    {% if (a.stuck_reason or '').startswith(('submit_clicked_before', 'submit_interrupted', 'submit_unconfirmed')) %}
+    <form class="inline" method="post" action="/app/{{a.id}}/approve" onsubmit="return confirm('Only if you checked and it was NOT sent: click Submit again for this application?')"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><input type="hidden" name="force" value="1"><button>Not sent - Submit it again</button></form>
     {% endif %}
-    </div>
+    <form class="inline" method="post" action="/app/{{a.id}}/retry"><input type="hidden" name="csrf" value="{{csrf}}"><input type="hidden" name="lane" value="stuck"><button title="Fill this application again from the start on the next run">Fill again</button></form>
+    <form class="inline end" method="post" action="/app/{{a.id}}/giveup"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Give up</button></form>
+    {% endif %}
   </div>
 
   <div class="card-body" id="body{{a.id}}">
@@ -70,7 +61,7 @@
       <div class="actions"><button class="primary">Enter code &amp; submit</button>
         {% if mail_on %}<button formaction="/app/{{a.id}}/code-from-mail">Get it from my email</button>{% endif %}</div>
     </form>
-    {% else %}<p class="reasons">The tab with this form is gone. Click Open form, submit it there (a new code will be emailed), then choose <b>I submitted it</b> under More.</p>{% endif %}
+    {% else %}<p class="reasons">The tab with this form is gone. Click Open form, submit it there (a new code will be emailed), then click <b>I submitted it</b>.</p>{% endif %}
   {% endif %}
 
   {% if lane == 'needs_input' and c.missing %}

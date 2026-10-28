@@ -91,7 +91,7 @@ Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each
 
 `autoapply review` opens `http://127.0.0.1:8765` (localhost only) and the tool's browser.
 
-Each application is a card. Its header always shows the company, the role, the fit score and anything that needs your eye (a visa answer to check, a paused company, why it is stuck), with the card's main action on the right: **Approve & submit** in Ready, **Open form** elsewhere. Click the header to open or close the card's details (the fields, your questions, the screenshot). Ready cards start closed, Needs input and Stuck cards start open, and the page remembers what you opened. **Expand all** / **Collapse all** sit above the cards, next to the lane's bulk action. Actions you need less often (**I submitted it**, **I answered in the form**, **Fill again**, **Reject**, **Give up**) are under **More** on each card.
+Each application is a card. Its header always shows the company, the role, the fit score and anything that needs your eye (a visa answer to check, a paused company, why it is stuck),, and below it the card's buttons, always visible: the main action first (**Approve & submit** in Ready, **Open form** in Stuck), then the others, with **Reject** or **Give up** on the far right in red. Click the header to open or close the card's details (the fields, your questions, the screenshot). Ready cards start closed, Needs input and Stuck cards start open, and the page remembers what you opened. **Expand all** / **Collapse all** sit above the cards, next to the lane's bulk action.
 
 | Lane | What you do |
 |---|---|

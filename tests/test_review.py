@@ -321,7 +321,7 @@ def test_a_company_at_its_limit_shows_paused_and_approve_all_leaves_it(client):
     assert ctx.ledger.get("greenhouse:a:1").state == READY
 
 
-def test_cards_collapse_and_keep_rare_actions_under_more(client):
+def test_cards_collapse_and_every_button_stays_in_view(client):
     needs_input_app(client.ctx, "greenhouse:a:1", "Acme", extra_missing=[       # stays in Needs input
         {"key": "id:x", "label": "Salary expectation", "kind": "text", "answer_kind": "short_text",
          "options": [], "required": True, "reason": "", "question": "salary expectation"}])
@@ -335,7 +335,10 @@ def test_cards_collapse_and_keep_rare_actions_under_more(client):
     assert f'<div class="card open" id="app{a}" data-id="{a}">' in needs         # questions start open
     for page in (ready, needs):
         assert 'class="twisty"' in page and 'data-all="open"' in page and 'data-all="close"' in page
-        head, body = page.split('<div class="head-actions">', 1)[1].split('<div class="card-body"', 1)
-        more = head.split('<details class="menu">', 1)[1]
-        assert ">Reject</button>" in more and ">I submitted it</button>" in more   # out of the way
-    assert 'class="primary">Approve &amp; submit</button>' in ready.split('<details class="menu">', 1)[0]
+        assert '<details class="menu">' not in page                          # nothing hidden in a menu
+        bar = page.split('<div class="card-actions">', 1)[1].split('<div class="card-body"', 1)[0]
+        assert ">I submitted it</button>" in bar
+        assert bar.rstrip().endswith('class="danger">Reject</button></form>\n  </div>') or \
+            bar.split('class="inline end"', 1)[1].count("<button") == 1             # Reject last, set apart
+    bar = ready.split('<div class="card-actions">', 1)[1]
+    assert bar.index('class="primary">Approve &amp; submit') < bar.index(">Open form to check<")   # main first
