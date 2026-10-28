@@ -178,6 +178,39 @@ async def panel_state(page, timeout_s: float = 20) -> str:
     return "missing"
 
 
+# Simplify's "You’ve already applied to this job / Applied on Oct 14, 2026 via Simplify /
+# View in Tracker" card, shown on a form you applied to before (its tracker knows the job).
+# VERIFIED 2026-10-28 in the 3.1.11 content script (curly apostrophe). Read from Simplify's
+# shadow roots; in the page itself only with "... via Simplify" next to it, so a job
+# description saying "if you have already applied..." does not count.
+ALREADY_APPLIED = re.compile(r"you(?:’|')?ve already applied to this job|you have already applied to this job", re.I)
+APPLIED_ON = re.compile(r"Applied on\s*(.+?)\s*via Simplify", re.I)
+
+_APPLIED_TEXT_JS = """() => {
+  const out = [];
+  const walk = root => { for (const el of root.querySelectorAll('*')) if (el.shadowRoot) {
+    out.push(el.shadowRoot.textContent || ''); walk(el.shadowRoot); } };
+  walk(document);
+  return [out.join('\\n'), document.body ? document.body.innerText : ''];
+}"""
+
+
+async def already_applied(page) -> str | None:
+    """None, or when Simplify says you applied ("Oct 14, 2026"; "" without a date)."""
+    try:
+        shadow, body = await safe_evaluate(page, _APPLIED_TEXT_JS) or ("", "")
+    except Exception:  # noqa: BLE001 - a navigating page shows no card
+        return None
+    if ALREADY_APPLIED.search(shadow):
+        text = shadow
+    elif ALREADY_APPLIED.search(body) and APPLIED_ON.search(body):
+        text = body
+    else:
+        return None
+    m = APPLIED_ON.search(text)
+    return " ".join(m.group(1).split()) if m else ""
+
+
 async def _has_text(page, text: str) -> bool:
     return bool(await safe_evaluate(page,
         """([host, text]) => [...document.querySelectorAll(host)]

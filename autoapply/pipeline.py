@@ -564,6 +564,7 @@ RUN_LINES = [
     ("ready", "filled -> Ready"),
     ("needs_input", "filled -> Needs input"),
     ("stuck", "Stuck"),
+    ("already_applied", "already applied (Simplify or Workday showed it): recorded as submitted, not filled"),
     ("corrected", "forms where Simplify's visa answer was replaced by yours"),
     ("company_paused", "waiting: company paused (by you, or at limits.company_max), filled after the pause"),
     ("company_run_cap", "waiting: one company's other postings (limits.per_company_per_run), filled on later runs"),

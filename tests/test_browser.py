@@ -342,3 +342,109 @@ def test_the_browser_opens_the_windows_and_places_tabs_in_them(bctx):
             for i in range(3):
                 assert await win(await bs.new_page(i)) == anchors[i]
     asyncio.run(go())
+
+
+# Simplify's card on a form you applied to before; it lives in Simplify's shadow root
+APPLIED_CARD_JS = """(when) => {
+  const host = document.createElement('div'); host.className = 'simplify-jobs-shadow-root';
+  document.body.appendChild(host);
+  const root = host.attachShadow({mode: 'open'});
+  root.innerHTML = '<div><p>You’ve already applied to this job</p><p>Applied on ' + when +
+                   ' via Simplify</p><button>View in Tracker</button></div>';
+}"""
+
+
+def _with_writeback(bctx):
+    bctx._secrets = {"GITHUB_TOKEN": "t"}
+    bctx.__dict__.pop("secrets", None)
+    bctx.__dict__.pop("writeback", None)
+
+
+def test_simplifys_already_applied_card_records_it_as_submitted(bctx, transport):
+    _with_writeback(bctx)
+    inner = simplify_mock()
+
+    async def mock(page):                    # the card arrives with Simplify's tracker data
+        await inner(page)
+        await page.evaluate(APPLIED_CARD_JS, "Oct 14, 2026")
+    bctx.simplify_mock = mock
+    seed(bctx, GH)
+    stats = RunStats()
+    asyncio.run(fill_many(bctx, [GH], stats))
+    led = bctx.ledger
+    assert led.get(GH).state == "submitted_manual"
+    assert "already applied on Oct 14, 2026" in led.get(GH).reason
+    app = led.application(GH)
+    assert app["submitted_at"] == "2026-10-14T12:00:00Z"
+    assert (Path(app["submission_dir"]) / "already_applied.png").exists()
+    assert transport.calls == []                       # nothing answered, nothing filled after Simplify
+    assert stats["already_applied"] == 1 and stats.get("stuck", 0) == 0
+    change = led.pending_writebacks(bctx.profile.sources[0].label)[-1]["change"]
+    assert change["status"] == "applied" and change["applied_on"] == "2026-10-14"
+    assert GH not in bctx.open_tabs
+
+
+def test_a_card_already_on_the_page_stops_before_simplify_fills(bctx, tmp_path):
+    html = (FORMS / "greenhouse.html").read_text(encoding="utf-8")
+    card = APPLIED_CARD_JS.replace("(when) => {", "(() => { const when = 'Sep 2, 2026';", 1)
+    page = tmp_path / "applied.html"
+    page.write_text(html.replace("</body>", f"<script>{card})()</script></body>"), encoding="utf-8")
+    bctx.form_url_for = lambda key: page.resolve().as_uri()
+    ran = []
+
+    async def mock(p):
+        ran.append(1)
+    bctx.simplify_mock = mock
+    seed(bctx, GH)
+    asyncio.run(fill_many(bctx, [GH], RunStats()))
+    assert bctx.ledger.get(GH).state == "submitted_manual" and ran == []
+    assert bctx.ledger.application(GH)["submitted_at"].startswith("2026-09-02")
+
+
+def test_already_applied_reads_only_simplifys_card():
+    from playwright.async_api import async_playwright
+    from autoapply.browser.simplify import already_applied
+
+    async def go():
+        async with async_playwright() as pw:
+            b = await pw.chromium.launch(executable_path=CHROMIUM)
+            page = await b.new_page()
+            # a job description's own wording is not Simplify's card
+            await page.set_content("<p>If you have already applied to this job, no need to apply again.</p>")
+            assert await already_applied(page) is None
+            await page.set_content("<p>Apply now</p>")
+            await page.evaluate(APPLIED_CARD_JS, "Oct 14, 2026")
+            assert await already_applied(page) == "Oct 14, 2026"
+            await page.set_content("<div id=h></div>")
+            await page.evaluate("""() => document.querySelector('#h').attachShadow({mode: 'open'})
+                                   .innerHTML = "<span>You've already applied to this job</span>" """)
+            assert await already_applied(page) == ""
+            await b.close()
+    asyncio.run(go())
+
+
+def test_approving_a_form_simplify_shows_as_applied_records_it_without_submitting(bctx):
+    _ready_greenhouse(bctx)
+    inner = simplify_mock()
+
+    async def mock(page):
+        await inner(page)
+        await page.evaluate(APPLIED_CARD_JS, "Oct 14, 2026")
+    bctx.simplify_mock = mock
+
+    async def go():
+        async with BrowserSession(bctx) as bs:
+            return await submit(bctx, bs, GH)          # no open tab -> refilled, card seen
+    result = asyncio.run(go())
+    assert result["state"] == "submitted_manual", result
+    assert bctx.ledger.get(GH).state == "submitted_manual"
+    assert bctx.ledger.submit_clicked(GH) is None      # Submit was never clicked
+
+
+def test_applied_day_reads_simplifys_date():
+    from datetime import date, timedelta
+    from autoapply.browser.submit import applied_day
+    assert applied_day("Oct 14, 2026") == date(2026, 10, 14)
+    assert applied_day("September 2, 2026") == date(2026, 9, 2)
+    assert applied_day((date.today() + timedelta(days=40)).strftime("%b %d, %Y")) == date.today()
+    assert applied_day("") is None and applied_day("yesterday") is None
