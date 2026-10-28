@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,12 +137,52 @@ class PostingRow:
         return self.data.get(k, default)
 
 
+class _Rows:
+    """A finished query: its rows already read, so no cursor outlives the lock."""
+
+    def __init__(self, rows: list, lastrowid, rowcount):
+        self._rows, self.lastrowid, self.rowcount = rows, lastrowid, rowcount
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _SharedDB:
+    """The ledger's one SQLite connection, safe to use from several threads.
+
+    Claude calls run in worker threads (form answers, scoring several postings at once)
+    and record their spend and check the budget from there, while the main thread keeps
+    reading and writing. One statement at a time, each read to the end before the next."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, params=()):
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            return _Rows(cur.fetchall() if cur.description else [], cur.lastrowid, cur.rowcount)
+
+    def executescript(self, script: str):
+        with self._lock:
+            return self._conn.executescript(script)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 class Ledger:
     def __init__(self, path: Path | str):
         self.path = str(path)
-        self.db = sqlite3.connect(self.path, timeout=30, isolation_level=None,
-                                  check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        self.db = _SharedDB(conn)
         self._depth = 0
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)

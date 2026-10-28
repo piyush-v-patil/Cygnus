@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from . import ats, blockers
@@ -180,48 +181,63 @@ def fail(ctx: Context, key: str, stage: str, err: Exception | str, stats: RunSta
     stats["error"] += 1
 
 
+FETCH_WORKERS = 6       # job pages fetched at once; each is a plain HTTP request to a public board
+
+
 def enrich(ctx: Context, stats: RunStats, limit: int | None, clients: dict | None = None) -> list[str]:
-    """Fetch descriptions, detect closed postings, apply regex blockers (§7)."""
+    """Fetch descriptions, detect closed postings, apply regex blockers (§7).
+
+    Pages are fetched FETCH_WORKERS at a time; everything else happens in order on this
+    thread, batch by batch, each batch no bigger than `limit` still allows."""
     led, profile = ctx.ledger, ctx.profile
     clients = clients or ats.clients()
     # retries first: behind a large backlog and a --limit they would otherwise never come up
     rows = [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "enrich"] + led.postings_in([DISCOVERED])
     rows = [r for r in rows if selected(ctx, r.get("company"))]          # this run's --company / --skip-company
     done: list[str] = []
-    for row in rows:
-        if limit is not None and len(done) >= limit:
-            break
-        key = row.posting_key
-        ref = parse_key(key)
-        cached = led.details(key)
-        try:
-            if _details_fresh(cached):
-                desc = cached["description_text"]
-            else:
-                det = clients[ref.ats].fetch(ref)
-                if det.closed:
-                    led.set_state(key, CLOSED, "posting_closed")
-                    stats["closed"] += 1
-                    continue
-                desc = det.description_text
-                led.save_details(key, desc, det.questions)
-                fill = {k: getattr(det, k) for k in ("company", "title", "location")
-                        if getattr(det, k) and not row.get(k)}
-                led.update_fields(key, **fill)
-        except (ats.FetchError, ValueError, KeyError, TypeError) as e:
-            # ValueError: a 200 that is not the JSON promised (a captive portal, an error page)
-            fail(ctx, key, "enrich", e if isinstance(e, ats.FetchError) else f"{type(e).__name__}: {e}", stats)
-            continue
-        led.set_state(key, ENRICHED)
-        stats["enriched"] += 1
-        hits = blockers.scan(desc, check_us_person=profile.visa.skip_us_person_roles,
-                             check_sponsorship=needs_sponsorship(ctx))
-        hit = blockers.confident_block(hits)
-        if hit:
-            skip(ctx, key, hit.reason, stats, detail=hit.evidence)
-            continue
-        done.append(key)
+    i = 0
+    with ThreadPoolExecutor(FETCH_WORKERS) as pool:
+        while i < len(rows) and (limit is None or len(done) < limit):
+            room = FETCH_WORKERS * 2 if limit is None else min(FETCH_WORKERS * 2, limit - len(done))
+            batch, i = rows[i:i + room], i + room
+            cached = {r.posting_key: led.details(r.posting_key) for r in batch}
+            fetching = {r.posting_key: pool.submit(lambda ref: clients[ref.ats].fetch(ref), parse_key(r.posting_key))
+                        for r in batch if not _details_fresh(cached[r.posting_key])}
+            for row in batch:
+                _enrich_one(ctx, row, cached[row.posting_key], fetching.get(row.posting_key), stats, done)
     return done
+
+
+def _enrich_one(ctx: Context, row, cached, fetched, stats: RunStats, done: list[str]) -> None:
+    led, profile = ctx.ledger, ctx.profile
+    key = row.posting_key
+    try:
+        if fetched is None:
+            desc = cached["description_text"]
+        else:
+            det = fetched.result()
+            if det.closed:
+                led.set_state(key, CLOSED, "posting_closed")
+                stats["closed"] += 1
+                return
+            desc = det.description_text
+            led.save_details(key, desc, det.questions)
+            fill = {k: getattr(det, k) for k in ("company", "title", "location")
+                    if getattr(det, k) and not row.get(k)}
+            led.update_fields(key, **fill)
+    except (ats.FetchError, ValueError, KeyError, TypeError) as e:
+        # ValueError: a 200 that is not the JSON promised (a captive portal, an error page)
+        fail(ctx, key, "enrich", e if isinstance(e, ats.FetchError) else f"{type(e).__name__}: {e}", stats)
+        return
+    led.set_state(key, ENRICHED)
+    stats["enriched"] += 1
+    hits = blockers.scan(desc, check_us_person=profile.visa.skip_us_person_roles,
+                         check_sponsorship=needs_sponsorship(ctx))
+    hit = blockers.confident_block(hits)
+    if hit:
+        skip(ctx, key, hit.reason, stats, detail=hit.evidence)
+        return
+    done.append(key)
 
 
 def needs_sponsorship(ctx: Context) -> bool:
@@ -302,6 +318,9 @@ def score(ctx: Context, stats: RunStats, limit: int | None = None, rescore: bool
     Held postings are re-decided every run from their stored score (free), so a
     lower cutoff takes effect at once; they are scored again only when the resume
     used for them changed. `limit` counts postings that need a Claude call.
+
+    Claude calls run `llm.parallel_calls` at a time; saving and deciding stay in order
+    on this thread, batch by batch, so the outcome is the same as one call at a time.
     """
     led, profile = ctx.ledger, ctx.profile
     rows = (led.postings_in([ENRICHED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "score"]
@@ -310,41 +329,67 @@ def score(ctx: Context, stats: RunStats, limit: int | None = None, rescore: bool
     calibration = ctx.calibration_examples()
     passed: list[str] = []
     calls = 0
-    for row in rows:
-        key = row.posting_key
-        if not_targeted(ctx, row):
-            stats["not_targeted"] += 1
-            continue
-        resume = ctx.resumes.file_for(row.get("role"))
-        rhash = ctx.resumes.hash(resume)
-        s = None if rescore else led.score(key, SCORE_VERSION, rhash)
-        if s is None:
-            if limit is not None and calls >= limit:
+    width = profile.llm.parallel_calls
+    batch: list[tuple] = []           # (row, resume, hash, stored score or None = needs a call)
+
+    def flush(pool) -> bool:
+        """Score the batch's calls at once, then save and decide in order. False = stop."""
+        futures = {}
+        for row, resume, rhash, s in batch:
+            if s is None:
+                det = led.details(row.posting_key) or {}
+                desc = det.get("description_text") or ""
+                hints = [h.evidence for h in blockers.scan(
+                    desc, profile.visa.skip_us_person_roles, needs_sponsorship(ctx)) if not h.confident]
+                futures[row.posting_key] = pool.submit(score_posting, ctx.llm, profile, ctx.resumes.text(resume),
+                                                       dict(row.data), desc, calibration, hints)
+        go_on = True
+        for row, resume, rhash, s in batch:
+            key = row.posting_key
+            if s is None:
+                try:
+                    s = futures[key].result()
+                except BudgetExceeded as e:
+                    if go_on:
+                        stats["stopped"] = str(e)
+                        log.warning("budget reached - no more Claude calls this run")
+                    go_on = False
+                    continue
+                except LLMUnavailable as e:
+                    if go_on:
+                        stats["stopped"] = str(e)
+                        log.warning("Claude is unavailable - scoring stops for this run: %s", e)
+                    go_on = False
+                    continue
+                except LLMError as e:
+                    fail(ctx, key, "score", e, stats)
+                    continue
+                led.save_score(key, s, profile.llm.score_model, SCORE_VERSION, rhash)
+                stats["scored"] += 1
+            decide(ctx, key, row, s, stats)
+            if led.get(key).state == SCORED:
+                passed.append(key)
+        batch.clear()
+        return go_on
+
+    with ThreadPoolExecutor(width) as pool:
+        for row in rows:
+            key = row.posting_key
+            if not_targeted(ctx, row):
+                stats["not_targeted"] += 1
                 continue
-            calls += 1
-            det = led.details(key) or {}
-            desc = det.get("description_text") or ""
-            hints = [h.evidence for h in blockers.scan(
-                desc, ctx.profile.visa.skip_us_person_roles, needs_sponsorship(ctx)) if not h.confident]
-            try:
-                s = score_posting(ctx.llm, profile, ctx.resumes.text(resume), dict(row.data), desc,
-                                  calibration, hints)
-            except BudgetExceeded as e:
-                stats["stopped"] = str(e)
-                log.warning("budget reached - no more Claude calls this run")
-                break
-            except LLMUnavailable as e:
-                stats["stopped"] = str(e)
-                log.warning("Claude is unavailable - scoring stops for this run: %s", e)
-                break
-            except LLMError as e:
-                fail(ctx, key, "score", e, stats)
-                continue
-            led.save_score(key, s, profile.llm.score_model, SCORE_VERSION, rhash)
-            stats["scored"] += 1
-        decide(ctx, key, row, s, stats)
-        if led.get(key).state == SCORED:
-            passed.append(key)
+            resume = ctx.resumes.file_for(row.get("role"))
+            rhash = ctx.resumes.hash(resume)
+            s = None if rescore else led.score(key, SCORE_VERSION, rhash)
+            if s is None:
+                if limit is not None and calls >= limit:
+                    continue
+                calls += 1
+            batch.append((row, resume, rhash, s))
+            if sum(1 for b in batch if b[3] is None) >= width and not flush(pool):
+                return passed
+        if batch:
+            flush(pool)
     return passed
 
 

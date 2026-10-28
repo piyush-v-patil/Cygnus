@@ -146,6 +146,9 @@ class BrowserCfg(_Strict):
     keep_tabs_max: int = Field(15, ge=0, le=60)
     tab_max_age_min: float = 240
     page_timeout_s: float = 45
+    # browser windows, each with its own Simplify turn (Simplify only works in a window's
+    # front tab): 2-3 fill forms truly at once. 1 = one window, one form at a time in front
+    windows: int = Field(1, ge=1, le=4)
 
     @field_validator("headless")
     @classmethod
@@ -167,6 +170,7 @@ class LlmCfg(_Strict):
     write_model: str = "claude-sonnet-5-5"
     monthly_budget_usd: float = 20
     server_fallback: bool = True         # write_model refusal fallback (Claude API only)
+    parallel_calls: int = Field(4, ge=1, le=8)  # scoring calls at once (1 = one at a time)
     pricing: dict[str, PriceCfg] = {}
 
 
