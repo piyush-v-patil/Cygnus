@@ -132,7 +132,8 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
         "y", "jane@example.com", "Secret-Pass-1!",   # Workday: yes, login
         "n",                    # no mail access
         "n",                    # do not download Simplify
-        "70", "manual",
+        "70", "", "3", "30",    # one per company per run; pause after 3 in 30 days
+        "manual",
     ])
     paths = Paths(tmp_path / "prof")
     said = []
@@ -140,6 +141,7 @@ def test_wizard_writes_a_valid_profile(tmp_path, monkeypatch):
     prof = load_profile(paths)
     assert prof.visa.confirmed and prof.visa.status == "opt_stem_opt" and prof.visa.needs_sponsorship_future
     assert prof.fit.cutoff == 70 and prof.resumes.default == "jane.pdf"
+    assert (prof.limits.per_company_per_run, prof.limits.company_max, prof.limits.company_days) == (1, 3, 30)
     assert prof.sources[0].type == "csv"
     assert (paths.resumes / "jane.txt").read_text().startswith("Jane Doe")
     assert "workday" in prof.filters.ats_allowed
@@ -162,11 +164,13 @@ def test_wizard_rerun_reasks_bad_input_and_keeps_hand_edits(tmp_path, monkeypatc
                    "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
                    "n", "n", "n", "n", "n", "n", "n",
                    "seventy", "150", "70",                     # re-asked until valid
+                   "0", "",                                    # no per-run limit, no auto-pause
                    "daily", "8:00, 25:00", "8:00"])
     said = []
     assert run_wizard(paths, IO(ask=lambda p: next(script), say=said.append)) == 0
     prof = load_profile(paths)
     assert prof.fit.cutoff == 70 and prof.schedule.times == ["08:00"] and prof.review.port == 9999
+    assert prof.limits.per_company_per_run is None and prof.limits.company_max is None
     assert list(paths.root.glob("profile.yaml.*.bak"))
     assert any("whole number" in s for s in said) and any("Not a time: 25:00" in s for s in said)
     assert yaml.safe_load(paths.profile.read_text())["review"] == {"port": 9999}
@@ -192,7 +196,7 @@ def test_wizard_does_not_save_unconfirmed_visa(tmp_path, monkeypatch):
     script = iter(["y", str(pdf), "", "", "r.pdf", "",
                    "newgrad", "software", "us_or_remote", "citizen_gc", "n", "n",   # not confirmed
                    "newgrad", "software", "us_or_remote", "opt_stem_opt", "n", "off", "y", "y",
-                   "n", "n", "n", "n", "n", "n", "n", "65", "manual"])
+                   "n", "n", "n", "n", "n", "n", "n", "65", "", "", "manual"])
     paths = Paths(tmp_path / "p")
     run_wizard(paths, IO(ask=lambda p: next(script), say=lambda s: None))
     prof = load_profile(paths)

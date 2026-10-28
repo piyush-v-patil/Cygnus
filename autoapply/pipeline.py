@@ -14,11 +14,11 @@ from datetime import datetime, timedelta, timezone
 
 from . import ats, blockers
 from .ats.detect import parse_key
-from .companies import pauses, paused_in, selected, until_text
+from .companies import norm, pauses, paused_in, selected, sent_in_window, until_text
 from .context import Context
 from .filters import location_ok, prefilter, us_person_company
 from .h1b import H1BIndex
-from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, HELD, MAX_ERROR_RETRIES, NEEDS_INPUT, READY,
+from .ledger import (CLOSED, DISCOVERED, ENRICHED, ERROR, FILLING, HELD, MAX_ERROR_RETRIES, NEEDS_INPUT, READY,
                      RECHECKABLE, SCORED, SKIPPED, STUCK, IllegalTransition)
 from .llm import BudgetExceeded, LLMError, LLMUnavailable
 from .llm.score import PROMPT_VERSION as SCORE_VERSION
@@ -387,7 +387,11 @@ def role_for(ctx: Context, key: str) -> str | None:
 
 
 def fill_candidates(ctx: Context, limit: int | None, stats: RunStats | None = None) -> list[str]:
+    """What this run fills, newest first: scored postings that are targeted, selected and not
+    paused, at most `limits.per_company_per_run` per company (its best-fit ones; the rest
+    wait for later runs), and never more than a company's `limits.company_max` allows."""
     led = ctx.ledger
+    lim = ctx.profile.limits
     active_pauses = pauses(ctx)
     rows = led.postings_in([SCORED]) + [r for r in led.postings_in([ERROR]) if _retry_stage(r) == "fill"]
     cap = ctx.profile.filters.per_company_cap
@@ -396,10 +400,12 @@ def fill_candidates(ctx: Context, limit: int | None, stats: RunStats | None = No
         for r in led.db.execute("SELECT p.company, COUNT(*) FROM applications a JOIN postings p "
                                 "USING(posting_key) GROUP BY p.company"):
             taken[r[0]] = r[1]
-    out = []
+    used: Counter = Counter()       # toward company_max: sent in the window, and already in flight
+    if lim.company_max:
+        used.update({k: len(v) for k, v in sent_in_window(ctx).items()})
+        used.update(norm(r.get("company") or "") for r in led.postings_in([FILLING, READY, NEEDS_INPUT, STUCK]))
+    eligible = []
     for r in rows:
-        if limit is not None and len(out) >= limit:
-            break
         if not_targeted(ctx, r):
             continue                     # filters narrowed since it was scored: not filled now
         if not selected(ctx, r.get("company")):
@@ -407,16 +413,42 @@ def fill_candidates(ctx: Context, limit: int | None, stats: RunStats | None = No
         if paused_in(active_pauses, r.get("company")):
             if stats is not None:
                 stats["company_paused"] += 1
-            continue                     # paused by you (30-day limit): scored, filled after the pause
+            continue                     # paused (by you, or at its limit): scored, filled after the pause
         if led.score(r.posting_key) is None:
             continue                     # never fill what was not scored (blockers, fit)
-        if cap and taken[r.get("company")] >= cap:
-            continue
         if r.posting_key.startswith("workday:"):
             from .browser.workday import account_blocked
             if account_blocked(ctx, r.posting_key):
                 continue                 # its Workday sign-in failed; waits until the account is fixed
+        eligible.append(r)
+    # One company's postings are often a dozen reqs for one team; the run spends its slots on
+    # different employers instead, giving each company's slot to the posting that fits best.
+    keep = set(range(len(eligible)))
+    if lim.per_company_per_run:
+        keep, per = set(), Counter()
+        for i, r in sorted(enumerate(eligible), key=lambda ir: (-led.score(ir[1].posting_key)["score"], ir[0])):
+            k = norm(r.get("company") or "")
+            if per[k] < lim.per_company_per_run:
+                per[k] += 1
+                keep.add(i)
+        if stats is not None and len(keep) < len(eligible):
+            stats["company_run_cap"] += len(eligible) - len(keep)
+    out = []
+    picked: Counter = Counter()
+    for i, r in enumerate(eligible):
+        if i not in keep:
+            continue
+        if limit is not None and len(out) >= limit:
+            break
+        k = norm(r.get("company") or "")
+        if lim.company_max and used[k] + picked[k] >= lim.company_max:
+            if stats is not None:
+                stats["company_limit"] += 1
+            continue                     # would take it past limits.company_max: waits for the window
+        if cap and taken[r.get("company")] >= cap:
+            continue
         taken[r.get("company")] += 1
+        picked[k] += 1
         out.append(r.posting_key)
     return out
 
@@ -488,7 +520,9 @@ RUN_LINES = [
     ("needs_input", "filled -> Needs input"),
     ("stuck", "Stuck"),
     ("corrected", "forms where Simplify's visa answer was replaced by yours"),
-    ("company_paused", "waiting: company paused by you (30-day limit), filled after the pause"),
+    ("company_paused", "waiting: company paused (by you, or at limits.company_max), filled after the pause"),
+    ("company_run_cap", "waiting: one company's other postings (limits.per_company_per_run), filled on later runs"),
+    ("company_limit", "waiting: would pass the company's limits.company_max, filled once the window allows"),
     ("error", "errors (retried next run)"),
     ("written_back", "status changes written to job-monitor"),
 ]

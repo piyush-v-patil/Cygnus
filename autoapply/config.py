@@ -215,6 +215,15 @@ class MailCfg(_Strict):
     wait_s: float = Field(180, ge=10, le=900)
 
 
+class LimitsCfg(_Strict):
+    """How much of a run, and of a month, one company may take (autoapply/companies.py)."""
+    per_company_per_run: int | None = Field(1, ge=1)  # postings filled per company in one run; null = no limit
+    # automatic pause: `company_max` applications sent to a company within `company_days`
+    # days pause it until the oldest of them is `company_days` old. null = off
+    company_max: int | None = Field(None, ge=1)
+    company_days: int = Field(30, ge=1, le=365)
+
+
 class WorkCfg(_Strict):
     """Standing answers to work-preference questions (autoapply/questions.py).
     null means "ask me": that question goes to Needs input as before."""
@@ -244,6 +253,7 @@ class Profile(_Strict):
     workday: WorkdayCfg = WorkdayCfg()
     mail: MailCfg = MailCfg()
     work: WorkCfg = WorkCfg()
+    limits: LimitsCfg = LimitsCfg()
 
     @property
     def writeback_source(self) -> SourceCfg | None:

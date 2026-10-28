@@ -301,3 +301,21 @@ def test_needs_input_prefills_your_work_preferences(client):
     html = client.get("/lane/needs_input").text
     assert "<option selected>Yes</option>" in html
     assert "pre-filled from: <b>your work preferences: you will work on-site</b>" in html
+
+
+def test_a_company_at_its_limit_shows_paused_and_approve_all_leaves_it(client):
+    from autoapply.ledger import SUBMITTED, now_iso
+    ctx = client.ctx
+    ctx.profile.limits.company_max = 1
+    needs_input_app(ctx, "greenhouse:a:2", "Acme")                    # one already sent today
+    save_answers(ctx.ledger, ctx.answers, "greenhouse:a:2", {"id:q105": "Yes"})
+    ctx.ledger.upsert_application("greenhouse:a:2", submitted_at=now_iso())
+    ctx.ledger.set_state("greenhouse:a:2", SUBMITTED)
+    needs_input_app(ctx, "greenhouse:a:1", "Acme")
+    save_answers(ctx.ledger, ctx.answers, "greenhouse:a:1", {"id:q105": "Yes"})
+    page = client.get("/lane/ready").text
+    assert "Acme paused until" in page and "(1 applications in 30 days)" in page
+    app_id = ctx.ledger.application("greenhouse:a:1")["id"]
+    r = client.post("/approve-all", data={"csrf": client.csrf, "ids": str(app_id)})
+    assert "Left for you (company paused): Acme" in r.text
+    assert ctx.ledger.get("greenhouse:a:1").state == READY

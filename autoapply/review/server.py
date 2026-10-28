@@ -328,11 +328,12 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
             if a is None or ctx.ledger.get(a["posting_key"]).state != READY:
                 continue
             company = ctx.ledger.get(a["posting_key"]).get("company")
-            if paused_in(active, company):         # you paused it: only its own Approve sends it
+            if paused_in(active, company):         # paused (by you, or at its limit): only its own Approve sends it
                 held.append(company or a["posting_key"])
                 continue
             try:                                       # each still submits on its own
                 msgs.append(await _submit(a["posting_key"]))
+                active = pauses(ctx)               # that one may have taken it to limits.company_max
             except Gone:
                 continue
             except Exception as e:  # noqa: BLE001 - one failure must not lose the others' results

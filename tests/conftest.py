@@ -33,6 +33,8 @@ def base_profile(**over) -> dict:
         "browser": {"parallel_tabs": 2, "executable_path": CHROMIUM if Path(CHROMIUM).exists() else None,
                     "autofill_timeout_s": 5, "page_timeout_s": 15},
         "llm": {"monthly_budget_usd": 5},
+        # tests seed several postings per company; the per-run company limit has its own tests
+        "limits": {"per_company_per_run": None},
     }
     for k, v in over.items():
         if isinstance(v, dict) and isinstance(d.get(k), dict):
