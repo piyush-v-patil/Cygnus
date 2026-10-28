@@ -319,3 +319,23 @@ def test_a_company_at_its_limit_shows_paused_and_approve_all_leaves_it(client):
     r = client.post("/approve-all", data={"csrf": client.csrf, "ids": str(app_id)})
     assert "Left for you (company paused): Acme" in r.text
     assert ctx.ledger.get("greenhouse:a:1").state == READY
+
+
+def test_cards_collapse_and_keep_rare_actions_under_more(client):
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme", extra_missing=[       # stays in Needs input
+        {"key": "id:x", "label": "Salary expectation", "kind": "text", "answer_kind": "short_text",
+         "options": [], "required": True, "reason": "", "question": "salary expectation"}])
+    needs_input_app(client.ctx, "greenhouse:b:2", "Beta")
+    save_answers(client.ctx.ledger, client.ctx.answers, "greenhouse:b:2", {"id:q105": "Yes"})
+    ready = client.get("/lane/ready").text
+    needs = client.get("/lane/needs_input").text
+    b = client.ctx.ledger.application("greenhouse:b:2")["id"]
+    a = client.ctx.ledger.application("greenhouse:a:1")["id"]
+    assert f'<div class="card" id="app{b}" data-id="{b}">' in ready              # Ready starts closed
+    assert f'<div class="card open" id="app{a}" data-id="{a}">' in needs         # questions start open
+    for page in (ready, needs):
+        assert 'class="twisty"' in page and 'data-all="open"' in page and 'data-all="close"' in page
+        head, body = page.split('<div class="head-actions">', 1)[1].split('<div class="card-body"', 1)
+        more = head.split('<details class="menu">', 1)[1]
+        assert ">Reject</button>" in more and ">I submitted it</button>" in more   # out of the way
+    assert 'class="primary">Approve &amp; submit</button>' in ready.split('<details class="menu">', 1)[0]
