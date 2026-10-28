@@ -121,7 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile-dir", help="profile folder (default ~/.autoapply or $AUTOAPPLY_HOME)")
     p.add_argument("--verbose", "-v", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("setup", help="interactive setup wizard")
+    st = sub.add_parser("setup", help="interactive setup wizard; or only some parts: setup work limits / setup new")
+    st.add_argument("parts", nargs="*", metavar="PART",
+                    help="ask only these parts and change only their settings; `new` = the parts your "
+                         "profile.yaml does not have yet. Parts: work, limits, mail, discord, schedule, fit, "
+                         "workday, preferences, sources, resumes, simplify")
     c = sub.add_parser("calibrate", help="label sample jobs to tune the fit cutoff")
     c.add_argument("--rescore", action="store_true")
     c.add_argument("--count", type=int, default=40)
@@ -218,8 +222,8 @@ def _dispatch(args, paths: Paths) -> int:
     from .context import Context
 
     if args.cmd == "setup":
-        from .setup_wizard import run_wizard
-        return run_wizard(paths)
+        from .setup_wizard import run_sections, run_wizard
+        return run_sections(paths, args.parts) if args.parts else run_wizard(paths)
 
     if args.cmd == "answers":
         from .config import AnswerBank

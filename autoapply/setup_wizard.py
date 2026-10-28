@@ -16,7 +16,7 @@ from typing import Callable
 
 import yaml
 
-from .config import ConfigError, Paths, Profile, load_secrets, save_secret
+from .config import ConfigError, Paths, Profile, load_secrets, read_yaml, save_secret
 from .llm.score import ROLES
 
 TIERS = ["intern", "newgrad", "experienced"]
@@ -267,21 +267,56 @@ WORK_QUESTIONS = (
 )
 
 
-def step_work(io: IO) -> dict | None:
-    """Standing answers to work-preference questions (profile `work:`); None = skipped."""
+def step_work(io: IO, current: dict | None = None) -> dict | None:
+    """Standing answers to work-preference questions (profile `work:`); None = skipped.
+    `current` (the saved ones) are the defaults offered."""
     io.say("\n== Work preferences ==\n  Forms ask the same things again and again: will you relocate, work on-site,\n"
            "  hybrid or remote, have you worked here before. Answer once and Cygnus answers them\n"
            "  for you (never visa, legal or demographic questions). \"ask\" leaves one to you.")
     if not io.yes("Set your work preferences now?", True):
         return None
+    cur = current or {}
     work: dict = {}
     for key, prompt, default in WORK_QUESTIONS:
+        if key in cur:
+            default = "ask" if cur[key] is None else ("yes" if cur[key] else "no")
         v = io.choose(prompt, ["yes", "no", "ask"], default)
         work[key] = None if v == "ask" else v == "yes"
     work["only_resume_employers"] = io.yes(
         "Is every employer you have worked for on your resume? (then \"have you worked for <company>?\" "
-        "is answered No when the resume does not name it)", True)
+        "is answered No when the resume does not name it)", cur.get("only_resume_employers", True))
     return work
+
+
+def step_fit(io: IO, current: dict | None = None) -> dict:
+    io.say("\n== Fit ==")
+    cutoff = ask_number(io, "Fit cutoff 0-100 (postings scoring lower are skipped)",
+                        (current or {}).get("cutoff", 65), 0, 100)
+    return {"cutoff": cutoff, "order": "newest_first"}
+
+
+def step_limits(io: IO, current: dict | None = None) -> dict:
+    cur = current or {}
+    io.say("  Big employers post dozens of openings; these keep one company from taking your runs.")
+    per_run = ask_number(io, "Most applications to one company in a run (0 = no limit)",
+                         cur.get("per_company_per_run", 1) or 0, 0, 50)
+    company_max = ask_number(io, "Pause a company after this many applications (0 = never)",
+                             cur.get("company_max") or 0, 0, 100)
+    company_days = (ask_number(io, "  ...sent within how many days", cur.get("company_days", 30), 1, 365)
+                    if company_max else cur.get("company_days", 30))
+    return {"per_company_per_run": per_run or None, "company_max": company_max or None,
+            "company_days": company_days}
+
+
+def step_schedule(io: IO, current: dict | None = None) -> dict:
+    cur = current or {}
+    mode = io.choose("Schedule", ["manual", "daily", "twice_daily"], cur.get("mode", "daily"))
+    times = cur.get("times") or (["08:00"] if mode != "twice_daily" else ["08:00", "18:00"])
+    if mode == "twice_daily" and len(times) < 2:
+        times = ["08:00", "18:00"]
+    if mode != "manual":
+        times = ask_times(io, "Run time(s), local HH:MM", times)
+    return {"mode": mode, "times": times}
 
 
 def ask_repo(io: IO, prompt: str, default: str) -> str:
@@ -570,22 +605,16 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
         filters["ats_allowed"] = allowed + ([] if "workday" in allowed else ["workday"])
     mail = step_mail(paths, io)
     consent = step_simplify(paths, io)
-    io.say("\n== Fit ==")
-    cutoff = ask_number(io, "Fit cutoff 0-100 (postings scoring lower are skipped)", 65, 0, 100)
-    io.say("  Big employers post dozens of openings; these keep one company from taking your runs.")
-    per_run = ask_number(io, "Most applications to one company in a run (0 = no limit)", 1, 0, 50)
-    company_max = ask_number(io, "Pause a company after this many applications (0 = never)", 0, 0, 100)
-    company_days = ask_number(io, "  ...sent within how many days", 30, 1, 365) if company_max else 30
-    mode = io.choose("Schedule", ["manual", "daily", "twice_daily"], "daily")
-    times = ["08:00"] if mode != "twice_daily" else ["08:00", "18:00"]
-    if mode != "manual":
-        times = ask_times(io, "Run time(s), local HH:MM", times)
+    fit = step_fit(io)
+    limits = step_limits(io)
+    schedule = step_schedule(io)
+    mode = schedule["mode"]
     data = {
         "sources": sources or [{"type": "csv", "path": str(paths.root / "jobs.csv")}],
-        "filters": filters, "visa": visa, "fit": {"cutoff": cutoff, "order": "newest_first"},
+        "filters": filters, "visa": visa, "fit": fit,
         "resumes": resumes, "browser": {"parallel_tabs": 3, "headless": False, "simplify_consent": consent},
         "llm": {"score_model": "claude-haiku-5-5", "write_model": "claude-sonnet-5-5", "monthly_budget_usd": 20},
-        "schedule": {"mode": mode, "times": times},
+        "schedule": schedule,
         "notifications": {"discord": discord,
                           "needs_input_ping": "immediate", "ping_group_threshold": 5},
         "testing": {"never_submit": False},
@@ -593,8 +622,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     }
     if work is not None:
         data["work"] = work
-    data["limits"] = {"per_company_per_run": per_run or None, "company_max": company_max or None,
-                      "company_days": company_days}
+    data["limits"] = limits
     note = write_profile(paths, data)
     if not paths.answers.exists():
         paths.answers.write_text("[]\n", encoding="utf-8")
@@ -617,4 +645,107 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     flag = "" if paths.root.resolve() == default_home.resolve() else f' --profile-dir "{paths.root}"'
     io.say(f"\nNext: `autoapply{flag} health`, then a dry run with `autoapply{flag} run --test --limit 3`."
            + (f"\n(Or set {ENV_HOME}={paths.root} once and leave out --profile-dir.)" if flag else ""))
+    return 0
+
+
+# ------------------------------------------------------ one part at a time --
+# `autoapply setup work limits` asks only those parts and changes only their settings;
+# `autoapply setup new` asks the parts your profile.yaml does not have yet (after an update).
+def _sec_work(paths, io, cur):
+    w = step_work(io, cur.get("work"))
+    return {"work": w} if w is not None else None
+
+
+def _sec_workday(paths, io, cur):
+    if not step_workday(paths, io):
+        return None
+    allowed = list((cur.get("filters") or {}).get("ats_allowed") or ["greenhouse", "ashby", "lever"])
+    return {"filters": {"ats_allowed": allowed + ([] if "workday" in allowed else ["workday"])}}
+
+
+def _sec_preferences(paths, io, cur):
+    filters, visa = step_preferences(io, None)
+    for k in ("ats_allowed", "per_company_cap"):     # not asked here: keep what you have
+        filters.pop(k, None)
+    return {"filters": filters, "visa": visa}
+
+
+def _sec_sources(paths, io, cur):
+    s = step_sources(paths, io)
+    return {"sources": s} if s else None
+
+
+# name: (the profile.yaml section it fills, what it asks, how)
+SECTIONS: dict[str, tuple[str, str, Callable]] = {
+    "work": ("work", "relocation, on-site/hybrid/remote, past employers",
+             _sec_work),
+    "limits": ("limits", "applications per company per run, automatic company pause",
+               lambda paths, io, cur: {"limits": step_limits(io, cur.get("limits"))}),
+    "mail": ("mail", "reading security codes and Workday emails from Gmail",
+             lambda paths, io, cur: {"mail": {"enabled": step_mail(paths, io)}}),
+    "discord": ("notifications", "Discord notifications",
+                lambda paths, io, cur: {"notifications": {"discord": step_discord(paths, io)}}),
+    "schedule": ("schedule", "when scheduled runs happen",
+                 lambda paths, io, cur: {"schedule": step_schedule(io, cur.get("schedule"))}),
+    "fit": ("fit", "the fit cutoff",
+            lambda paths, io, cur: {"fit": step_fit(io, cur.get("fit"))}),
+    "workday": ("", "your Workday login (and applying on Workday)", _sec_workday),
+    "preferences": ("", "tiers, roles, location and work authorization", _sec_preferences),
+    "sources": ("", "where jobs come from (job-monitor, CSV)", _sec_sources),
+    "resumes": ("", "your resume files",
+                lambda paths, io, cur: {"resumes": step_resumes(paths, io)}),
+    "simplify": ("", "the Simplify extension",
+                 lambda paths, io, cur: {"browser": {"simplify_consent": step_simplify(paths, io)}}),
+}
+NEW_ORDER = ("work", "limits", "mail", "discord", "schedule", "fit")   # the parts a new release may add
+
+
+def sections_help() -> str:
+    return "; ".join(f"{n}: {what}" for n, (_, what, _) in SECTIONS.items())
+
+
+def update_profile(paths: Paths, partial: dict) -> str:
+    """Merge `partial` into profile.yaml: only those settings change; the old file is backed up."""
+    old = read_yaml(paths.profile) or {}
+    merged = _merge(old, partial)
+    try:
+        Profile.model_validate(merged)
+    except ValueError as e:
+        raise ConfigError(f"those answers do not make a valid profile: {str(e).splitlines()[0]}") from e
+    from datetime import datetime
+    backup = paths.profile.with_name(f"profile.yaml.{datetime.now():%Y%m%d-%H%M%S}.bak")
+    backup.write_text(paths.profile.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    paths.profile.write_text(PROFILE_HEADER + yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
+    return f"The previous profile.yaml is saved as {backup.name}."
+
+
+def run_sections(paths: Paths, names: list[str], io: IO | None = None) -> int:
+    io = io or IO()
+    if not paths.profile.exists():
+        io.say(f"No profile at {paths.profile} yet - run `autoapply setup` (without a part) first.")
+        return 1
+    cur = read_yaml(paths.profile) or {}
+    names = [n.lower() for n in names]
+    if names == ["new"]:
+        names = [n for n in NEW_ORDER if SECTIONS[n][0] not in cur]
+        if not names:
+            io.say("Your profile.yaml already has every part. `autoapply settings` shows all the values in use.")
+            return 0
+        io.say("New since your profile was written: " + ", ".join(f"{n} ({SECTIONS[n][1]})" for n in names))
+    unknown = [n for n in names if n not in SECTIONS]
+    if unknown:
+        io.say(f"No part called {', '.join(unknown)}. The parts: {', '.join(SECTIONS)}, or `new`.")
+        return 2
+    partial: dict = {}
+    for n in names:
+        part = SECTIONS[n][2](paths, io, cur)
+        if part:
+            partial = _merge(partial, part)
+    if not partial:
+        io.say("Nothing to change.")
+        return 0
+    note = update_profile(paths, partial)
+    io.say(f"\nSaved {', '.join(names)} to {paths.profile}; nothing else was changed. {note}")
+    if "schedule" in names and sys.platform == "win32":
+        io.say("Run `autoapply schedule install` to apply the new times.")
     return 0

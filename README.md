@@ -41,6 +41,16 @@ autoapply setup
 
 Keys, tokens and webhook URLs are typed hidden, so they can't end up in a screenshot. If a GitHub token is already saved, setup offers to replace it, for example after a leak. Running setup again keeps a dated copy of the old `profile.yaml` (`profile.yaml.<date>.bak`). It also keeps the settings it did not ask about, such as `review.port`, `workday.*` or `llm.pricing`.
 
+**One part at a time.** You don't need the whole wizard to change one thing:
+
+```
+autoapply setup new              # after an update: asks only the parts your profile.yaml doesn't have yet
+autoapply setup limits           # asks only that part; nothing else in profile.yaml changes
+autoapply setup work mail        # several parts in one go
+```
+
+The parts are `work`, `limits`, `mail`, `discord`, `schedule`, `fit`, `workday`, `preferences` (tiers, roles, location, work authorization), `sources`, `resumes` and `simplify`. Your current values are the defaults, so pressing Enter keeps them. A dated backup is kept here too. Any comments you wrote in `profile.yaml` are not carried over, but the backup still has them. `autoapply settings` shows every value in use.
+
 Before the first run:
 
 - **Sync your manual Applied marks.** Marks you made on the job-monitor dashboard stay in your browser until you add a GitHub token in the dashboard's ⚙ settings and they sync to `jobs.json`. Until then, the tool cannot see them and may re-attempt jobs you already applied to by hand.
@@ -55,6 +65,7 @@ autoapply run --review [--limit N] [--test]      # same, then review right away 
 autoapply review                                 # open the review queue + the tool's browser
 autoapply status                                 # counts per state, spend, last run's numbers
 autoapply settings                               # every setting with the value in use; "# default" = not in your profile.yaml
+autoapply setup new | <part> [<part>...]         # ask only new parts, or only these (work, limits, mail, ...)
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
 autoapply requeue [--lane stuck|needs_input|ready|all]  # fill queued applications again next run
@@ -167,7 +178,7 @@ Cygnus counts an application as sent only when the board confirms it: a confirma
 
 ### Answers you give once
 
-**Work preferences.** Forms keep asking the same things. Set them once in `profile.yaml` (or in `autoapply setup`), and Cygnus answers them itself, marked *Your work preferences* on the card:
+**Work preferences.** Forms keep asking the same things. Set them once with `autoapply setup work` (or by hand in `profile.yaml`), and Cygnus answers them itself, marked *Your work preferences* on the card:
 
 ```yaml
 work:
@@ -202,7 +213,7 @@ autoapply run --review --skip-company "capital one, acme"
 - A name matches the company's own name or its first words, and spaces don't matter: "capital one" matches "Capital One Financial" and "CapitalOne".
 - `autoapply companies` lists the companies with postings waiting, so you can see the exact names.
 
-**Spreading runs across companies.** Big employers post dozens of openings, and on their own they would take most of a run. Two settings in `profile.yaml` (also asked in `autoapply setup`) stop that:
+**Spreading runs across companies.** Big employers post dozens of openings, and on their own they would take most of a run. Two settings in `profile.yaml` stop that. Set them with `autoapply setup limits`, or by hand:
 
 ```yaml
 limits:
