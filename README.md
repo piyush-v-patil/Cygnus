@@ -64,8 +64,11 @@ autoapply mail [login | test | recent]           # read-only mailbox for securit
 autoapply companies [pause|resume "<name>"] [--days 30]  # pause a company (30-day limit), see company names
 autoapply run --company "capital one" --skip-company acme  # this run: only / not these companies
 autoapply schedule install|remove|show           # Windows Task Scheduler
+autoapply shortcut [--name N] [--command "..."]  # desktop icon: PowerShell, venv on, run command typed in
 autoapply health                                 # the pre-run checks on their own
 ```
+
+**Desktop shortcut.** Run `autoapply shortcut` once from your Cygnus folder with the virtual environment active (setup also offers it). It puts a **Cygnus** icon on your desktop. Clicking it opens PowerShell in that folder with the virtual environment active and `autoapply run --review --limit ` already typed at the prompt: type a number and press Enter. Nothing runs until you do. The icon opens `start-autoapply.ps1` in your profile folder, which you can edit. `--command "autoapply review"` types something else, and `--name` gives a second icon its own name.
 
 Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each run writes a log file to `logs\`.
 

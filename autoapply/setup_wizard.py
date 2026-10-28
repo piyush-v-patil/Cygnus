@@ -604,6 +604,11 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     if key and io.yes("Calibrate the fit cutoff now (label ~40 jobs, about 10 minutes)?", False):
         from .calibrate import run_calibration
         run_calibration(ctx, ask=lambda p: io.ask(p.rstrip(": ")), say=io.say)
+    if sys.platform == "win32" and io.yes("Put a Cygnus icon on your desktop (PowerShell with "
+                                          "`autoapply run --review --limit` typed in)?", True):
+        from .shortcut import shortcut_command
+        shortcut_command(paths, str(paths.root) if paths.root.resolve() != Paths.resolve(None).root.resolve()
+                         else None)
     if mode != "manual" and sys.platform == "win32" and io.yes("Install the Windows scheduled task now?", True):
         from .scheduler_windows import schedule_command
         schedule_command("install", ctx, str(paths.root))
