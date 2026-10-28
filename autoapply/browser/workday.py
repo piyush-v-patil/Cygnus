@@ -639,14 +639,17 @@ async def simplify_page(ctx, page, hints: dict) -> None:
     page by itself about 1.5 s after it renders (continuous mode, on by default), so wait
     for that fill before clicking Autofill; a click during a fill is ignored anyway."""
     from . import simplify
+    from .fill import stop_if_applied
     async with in_front(page):
         try:
             await page.bring_to_front()
         except Exception:  # noqa: BLE001
             pass
+        await stop_if_applied(page)              # Simplify's "already applied" card
         mock = getattr(ctx, "simplify_mock", None)
         if mock is not None:
             await mock(page)
+            await stop_if_applied(page)
             return
         timeout = ctx.profile.browser.autofill_timeout_s
         try:
@@ -659,7 +662,9 @@ async def simplify_page(ctx, page, hints: dict) -> None:
             else:
                 await simplify.autofill(page, hints, timeout_s=timeout, require_fill=False)
         except simplify.SimplifyError as e:
+            await stop_if_applied(page)
             raise _stuck(e.kind, str(e)) from e
+        await stop_if_applied(page)
 
 
 # ------------------------------------------------------------------ errors --
@@ -784,7 +789,8 @@ async def walk(ctx, page, posting_key: str, plan: list, missing: list, generated
             await sign_in(ctx, page, posting_key)
             continue
         if st == "submitted":
-            raise _stuck("already_submitted", "Workday shows this application as already submitted")
+            from .fill import AlreadyApplied
+            raise AlreadyApplied(by="Workday")
         if st == "review":
             return True
 

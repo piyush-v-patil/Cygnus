@@ -25,7 +25,7 @@ from ..llm.cover_letter import render_pdf, write_cover_letter
 from ..normalize import normalize_question, slug
 from ..questions import standing_value
 from .fields import Field, FillError, combobox_options, safe_screenshot, enumerate_fields, fill_field
-from .simplify import SimplifyError, autofill
+from .simplify import SimplifyError, already_applied, autofill
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,17 @@ class Stuck(Exception):
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
         self.detail = detail
+
+
+class AlreadyApplied(Stuck):
+    """The form says you applied to this job before (Simplify's "already applied" card, or
+    Workday's own page): recorded as submitted, never filled again. `when` is the date
+    shown ("Oct 14, 2026"), "" without one."""
+
+    def __init__(self, when: str = "", by: str = "Simplify"):
+        super().__init__("already_applied", f"{by} shows you already applied" + (f" on {when}" if when else ""))
+        self.when = when
+        self.by = by
 
 
 @dataclass
@@ -318,14 +329,24 @@ async def run_simplify(ctx, page, hints: dict) -> None:
         except Exception:  # noqa: BLE001 - a tab that cannot come forward still gets its try
             log.debug("could not bring the tab to the front")
         await check_window_visible(page)
+        await stop_if_applied(page)
         mock = getattr(ctx, "simplify_mock", None)
-        if mock is not None:
-            await mock(page)
-            return
         try:
-            await autofill(page, hints, timeout_s=ctx.profile.browser.autofill_timeout_s)
+            if mock is not None:
+                await mock(page)
+            else:
+                await autofill(page, hints, timeout_s=ctx.profile.browser.autofill_timeout_s)
         except SimplifyError as e:
+            await stop_if_applied(page)       # its card can be why it would not fill
             raise Stuck(e.kind, str(e)) from e
+        # the card comes with Simplify's tracker data, often after the panel: look again
+        await stop_if_applied(page)
+
+
+async def stop_if_applied(page) -> None:
+    when = await already_applied(page)
+    if when is not None:
+        raise AlreadyApplied(when)
 
 
 async def attach_resume(page, fields: list[Field], resume: Path, hints: dict) -> Field | None:
@@ -664,6 +685,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             page = getattr(e, "page", None)
             log.info("    -> this window is hidden; back to the first window")
             back_to_first_window(key, str(e))
+        except AlreadyApplied as e:
+            from .submit import record_already_applied
+            page = getattr(e, "page", None)
+            log.info("    -> %s: recorded as submitted, not filled", e)
+            await record_already_applied(ctx, key, e, page)
+            stats["already_applied"] += 1
         except Stuck as e:
             page = getattr(e, "page", None)
             if _window.get() > 0 and (e.reason in WINDOW_STALLS or (

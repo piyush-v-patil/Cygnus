@@ -225,8 +225,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
 
     async def _show(key: str) -> str:
         """Bring the application's tab to the front, or reopen + refill it. Returns a note."""
-        from ..browser.fill import Stuck
+        from ..browser.fill import AlreadyApplied, Stuck
         from ..browser.replay import replay
+        from ..browser.submit import record_already_applied
         from ..browser.workday import NeedsInputError
         async with sess.lock:
             _active(key)                               # never reopen (and refill) a sent application
@@ -244,6 +245,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                     if led.get(key).state != NEEDS_INPUT:
                         led.set_state(key, NEEDS_INPUT, None, "Workday asked more questions")
                     note = f"Reopened; Workday asks {len(e.missing)} more question(s) - answer them here."
+                except AlreadyApplied as e:
+                    await record_already_applied(ctx, key, e, getattr(e, "page", None))
+                    return f"{e}: recorded as submitted (see History), not filled again."
                 except Stuck as e:
                     tab = getattr(e, "page", None)
                     note = f"Reopened the form; finish it by hand ({e})."
@@ -261,8 +265,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         """A Workday application stops on the page with questions; once they are answered
         the walk goes on from there in the same tab, to Review or to the next questions."""
         from ..browser import workday
-        from ..browser.fill import Stuck
-        from ..browser.submit import _stuck
+        from ..browser.fill import AlreadyApplied, Stuck
+        from ..browser.submit import _stuck, record_already_applied
         async with sess.lock:
             page = ctx.open_tabs[key]
             try:
@@ -270,6 +274,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                     return "Workday: went on to the Review page."
                 n = len((ctx.ledger.application(key) or {}).get("missing") or [])
                 return f"Workday asked {n} more question(s) on a later page; answer them here."
+            except AlreadyApplied as e:
+                await record_already_applied(ctx, key, e, page)
+                return f"{e}: recorded as submitted (see History)."
             except Stuck as e:
                 _stuck(ctx, key, e, page)
                 return f"Workday stopped: {e}"

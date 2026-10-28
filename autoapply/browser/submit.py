@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from .. import ats
@@ -13,7 +13,7 @@ from ..ledger import (CLOSED, NEEDS_INPUT, READY, STUCK, SUBMITTED, SUBMITTED_MA
 from ..records import submission_dir, write_record
 from ..writeback import applied_change
 from .fields import enumerate_fields, safe_screenshot
-from .fill import Stuck, detect_blockers
+from .fill import AlreadyApplied, Stuck, detect_blockers
 from .replay import replay
 
 log = logging.getLogger(__name__)
@@ -365,6 +365,8 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
         await show_window(e.page)
         return {"state": READY, "detail": "Workday's Review page is open in the tool's browser with your "
                                           "answers. Check it, then click Approve & submit again"}
+    except AlreadyApplied as e:
+        return await record_already_applied(ctx, posting_key, e, getattr(e, "page", None))
     except Stuck as e:
         _stuck(ctx, posting_key, e, getattr(e, "page", None))
         return {"state": STUCK, "detail": str(e)}
@@ -581,6 +583,44 @@ async def mark_manual(ctx, bs, posting_key: str) -> dict:
     if ctx.writeback is not None:
         ctx.writeback.queue(posting_key, applied_change())
     return {"state": SUBMITTED_MANUAL, "detail": str(sub)}
+
+
+def applied_day(when: str) -> date | None:
+    """"Oct 14, 2026" (Simplify's card) as a date; None when it does not read as one."""
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            day = datetime.strptime((when or "").strip(), fmt).date()
+        except ValueError:
+            continue
+        return min(day, date.today())
+    return None
+
+
+async def record_already_applied(ctx, posting_key: str, err, page=None) -> dict:
+    """The form says you applied to this job before: recorded as submitted by you (on the
+    day it shows), written back to job-monitor, and never filled again."""
+    led = ctx.ledger
+    row = led.get(posting_key)
+    app = led.application(posting_key) or {}
+    posting = dict(row.data)
+    sub = submission_dir(ctx.paths.submissions, posting)
+    if page is not None and not page.is_closed():
+        await safe_screenshot(page, sub / "already_applied.png")
+    det = led.details(posting_key) or {}
+    write_record(sub, posting, app.get("fill_plan") or [], None, [], det.get("description_text", ""),
+                 led.score(posting_key), {"mode": "already applied", "detail": str(err)})
+    day = applied_day(getattr(err, "when", ""))
+    at = f"{day.isoformat()}T12:00:00Z" if day else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    led.upsert_application(posting_key, submission_dir=str(sub), submitted_at=at, stuck_reason=None)
+    if led.get(posting_key).state != SUBMITTED_MANUAL:
+        led.set_state(posting_key, SUBMITTED_MANUAL, str(err)[:300])
+    if ctx.writeback is not None:
+        ctx.writeback.queue(posting_key, applied_change(day))
+    kept, _ = ctx.take_tab(posting_key)               # nothing left to do in its tab
+    for p in {kept, page} - {None}:
+        if not p.is_closed():
+            await p.close()
+    return {"state": SUBMITTED_MANUAL, "detail": f"{err}; recorded as submitted, not filled again"}
 
 
 async def type_into_tab(ctx, posting_key: str, entries: list[dict]) -> bool:
