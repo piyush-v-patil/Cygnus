@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--no-browser", action="store_true", help="do not open the UI in a web browser")
     rv.add_argument("--test", action="store_true", help="never click Submit in this session")
     sub.add_parser("status", help="counts per state, spend, last run")
+    sub.add_parser("settings", help="every setting with the value in use, defaults included")
     rq = sub.add_parser("requeue", help="send queued applications back to be filled again on the next run")
     rq.add_argument("--lane", choices=["ready", "needs_input", "stuck", "all", "tested"], default="all",
                     help="all = ready + needs_input + stuck; tested = approved during --test runs (never sent)")
@@ -278,6 +279,11 @@ def _dispatch(args, paths: Paths) -> int:
             clear_accounts(ctx, keys)         # a failed Workday sign-in gets another try
         print(f"{len(keys)} application(s) will be filled again on the next `autoapply run`."
               " Your saved answers are kept.")
+        return 0
+
+    if args.cmd == "settings":
+        from .settings_cmd import settings_text
+        print(settings_text(paths))
         return 0
 
     if args.cmd == "status":
