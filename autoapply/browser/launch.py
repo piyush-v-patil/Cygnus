@@ -48,11 +48,15 @@ class BrowserSession:
         self.headless = ov.get("headless", False)
         self.use_extension = ov.get("extension", True)
         self.user_data_dir = ov.get("user_data_dir") or ctx.paths.browser_profile
+        self.windows: list = []       # each window's first tab; forms open as tabs beside it
 
     async def __aenter__(self) -> "BrowserSession":
         from playwright.async_api import async_playwright
         cfg = self.ctx.profile.browser
-        args = ["--no-first-run", "--no-default-browser-check", "--disable-features=Translate"]
+        # with several windows, a window covered by another must not count as hidden: Windows
+        # reports covered windows to Chrome as occluded, and Simplify pauses in a hidden tab
+        off = "Translate" + (",CalculateNativeWinOcclusion" if cfg.windows > 1 else "")
+        args = ["--no-first-run", "--no-default-browser-check", f"--disable-features={off}"]
         if self.use_extension:
             ext = str(self.ctx.paths.extension)
             args += [f"--disable-extensions-except={ext}", f"--load-extension={ext}"]
@@ -67,7 +71,30 @@ class BrowserSession:
         self.context.on("close", lambda _ctx: setattr(self, "closed", True))
         if self.use_extension:
             await self._settle_extension()
+        await self._open_windows(cfg.windows)
         return self
+
+    async def _open_windows(self, n: int) -> None:
+        """`browser.windows` windows. Simplify only works in a window's front tab, so each
+        window can have one form being filled at a time; one window = one at a time."""
+        first = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        self.windows = [first]
+        for _ in range(max(1, n) - 1):
+            try:
+                cdp = await self.context.new_cdp_session(first)
+                try:
+                    async with self.context.expect_page() as info:
+                        await cdp.send("Target.createTarget", {"url": "about:blank", "newWindow": True})
+                    self.windows.append(await info.value)
+                finally:
+                    await cdp.detach()
+            except Exception as e:  # noqa: BLE001 - fewer windows is slower, never wrong
+                log.warning("could not open another browser window (%s); using %d", e, len(self.windows))
+                break
+
+    @property
+    def window_count(self) -> int:
+        return max(1, len(self.windows))
 
     async def _settle_extension(self):
         await settle_extension(self.context, self.ctx.profile.browser.simplify_consent)
@@ -75,10 +102,20 @@ class BrowserSession:
     def extension_loaded(self) -> bool:
         return any(w.url.startswith("chrome-extension://") for w in self.context.service_workers)
 
-    async def new_page(self):
-        page = await self.context.new_page()
-        # keep a blank first tab around so closing work tabs never closes the window
-        return page
+    async def new_page(self, window: int = 0):
+        """A new tab in `window` (0 = the first). Each window keeps its blank first tab, so
+        closing work tabs never closes a window."""
+        if len(self.windows) <= 1:
+            return await self.context.new_page()
+        # one tab opened at a time: "the next new tab" must be this one, not another worker's
+        if getattr(self, "_opening", None) is None:
+            self._opening = asyncio.Lock()
+        async with self._opening:
+            if window <= 0 or window >= len(self.windows):
+                return await self.context.new_page()
+            async with self.context.expect_page() as info:
+                await self.windows[window].evaluate("window.open('about:blank', '_blank', 'noopener')")
+            return await info.value
 
     async def __aexit__(self, *exc):
         try:

@@ -42,6 +42,7 @@ resumes:                             # role family -> PDF in resumes/
 
 browser:
   parallel_tabs: 3
+  windows: 1                        # 2-3: each window fills one form in front at once (Simplify needs the front); keep them open, not minimised
   headless: false                    # must stay false in v1
   # executable_path: null            # only to override Playwright's bundled Chromium
   simplify_consent: essentials       # answer to Simplify's data-consent card: essentials | accept
@@ -54,6 +55,7 @@ llm:
   write_model: claude-sonnet-5-5
   monthly_budget_usd: 20
   server_fallback: true              # retry a declined write call on a fallback model
+  parallel_calls: 4                  # Claude scoring calls at once; 1 = one at a time
   pricing: {}                        # $/million tokens. Empty uses the built-in table
   #  claude-haiku-5-5:  {input: 0.10, output: 0.50}   (published 2026-10; VERIFY current prices)
   #  claude-sonnet-5-5: {input: 2.00, output: 10.00}

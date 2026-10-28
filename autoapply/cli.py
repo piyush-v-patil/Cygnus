@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("parts", nargs="*", metavar="PART",
                     help="ask only these parts and change only their settings; `new` = the parts your "
                          "profile.yaml does not have yet. Parts: work, limits, mail, discord, schedule, fit, "
-                         "workday, preferences, sources, resumes, simplify")
+                         "workday, preferences, sources, resumes, speed, simplify")
     c = sub.add_parser("calibrate", help="label sample jobs to tune the fit cutoff")
     c.add_argument("--rescore", action="store_true")
     c.add_argument("--count", type=int, default=40)
