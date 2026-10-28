@@ -361,10 +361,8 @@ async def submit(ctx, bs, posting_key: str, force: bool = False) -> dict:
     except ReviewFirst as e:
         # never submit pages the user has not had a chance to see
         ctx.remember_tab(posting_key, e.page)
-        try:
-            await e.page.bring_to_front()
-        except Exception:  # noqa: BLE001
-            pass
+        from .launch import show_window
+        await show_window(e.page)
         return {"state": READY, "detail": "Workday's Review page is open in the tool's browser with your "
                                           "answers. Check it, then click Approve & submit again"}
     except Stuck as e:

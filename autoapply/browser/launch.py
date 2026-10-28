@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 log = logging.getLogger(__name__)
 
@@ -124,3 +125,82 @@ class BrowserSession:
         finally:
             if self.pw is not None:
                 await self.pw.stop()
+
+
+# ------------------------------------------------- the window in front of you --
+async def show_window(page) -> None:
+    """Put this tab, and the tool's browser window, in front of everything else.
+
+    Bringing a tab to the front only changes the tab inside the tool's browser; the
+    review page you clicked on is in your own browser, which stays on top. Windows lets a
+    program take the foreground only just after keyboard input, so on Windows the window
+    is raised the way that allows (win_foreground); elsewhere, or if that does not take,
+    the window is minimised and restored, which raises it (and brings it back from the
+    taskbar if it was minimised)."""
+    try:
+        await page.bring_to_front()
+    except Exception:  # noqa: BLE001 - a closed tab simply is not shown
+        return
+    if sys.platform == "win32":
+        try:
+            title = await page.title()
+        except Exception:  # noqa: BLE001
+            title = ""
+        if title and await asyncio.to_thread(win_foreground, title):
+            return
+    await _restore_on_top(page)
+
+
+async def _restore_on_top(page) -> None:
+    try:
+        cdp = await page.context.new_cdp_session(page)
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        tid = (await cdp.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        wid = (await cdp.send("Browser.getWindowForTarget", {"targetId": tid}))["windowId"]
+        was = (await cdp.send("Browser.getWindowBounds", {"windowId": wid}))["bounds"].get("windowState", "normal")
+        if was == "fullscreen":
+            return
+        if was != "minimized":
+            await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "minimized"}})
+        back = "maximized" if was == "maximized" else "normal"
+        await cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": back}})
+    except Exception as e:  # noqa: BLE001 - a window that will not move is still open
+        log.debug("could not raise the browser window: %s", e)
+    finally:
+        try:
+            await cdp.detach()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def win_foreground(title: str) -> bool:
+    """Windows: bring the visible browser window whose title starts with `title` to the
+    foreground. True when Windows says it is in front."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    found: list = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n and user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if buf.value.startswith(title):
+                found.append(hwnd)
+        return True
+    user32.EnumWindows(each, 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)                       # SW_RESTORE
+    # the foreground lock lifts for the process that last had keyboard input: a lone Alt
+    # press and release (no character, no shortcut) is the documented way to qualify
+    user32.keybd_event(0x12, 0, 0, 0)                    # VK_MENU down
+    user32.keybd_event(0x12, 0, 0x0002, 0)               # VK_MENU up (KEYEVENTF_KEYUP)
+    user32.SetForegroundWindow(hwnd)
+    return user32.GetForegroundWindow() == hwnd
