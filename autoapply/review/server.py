@@ -253,7 +253,8 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                 if tab is not None:
                     ctx.remember_tab(key, tab)
             if tab is not None:
-                await tab.bring_to_front()
+                from ..browser.launch import show_window
+                await show_window(tab)               # in front of the review page, not only inside its window
         return note
 
     async def _workday_on(key: str) -> str:
