@@ -572,6 +572,10 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     consent = step_simplify(paths, io)
     io.say("\n== Fit ==")
     cutoff = ask_number(io, "Fit cutoff 0-100 (postings scoring lower are skipped)", 65, 0, 100)
+    io.say("  Big employers post dozens of openings; these keep one company from taking your runs.")
+    per_run = ask_number(io, "Most applications to one company in a run (0 = no limit)", 1, 0, 50)
+    company_max = ask_number(io, "Pause a company after this many applications (0 = never)", 0, 0, 100)
+    company_days = ask_number(io, "  ...sent within how many days", 30, 1, 365) if company_max else 30
     mode = io.choose("Schedule", ["manual", "daily", "twice_daily"], "daily")
     times = ["08:00"] if mode != "twice_daily" else ["08:00", "18:00"]
     if mode != "manual":
@@ -589,6 +593,8 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     }
     if work is not None:
         data["work"] = work
+    data["limits"] = {"per_company_per_run": per_run or None, "company_max": company_max or None,
+                      "company_days": company_days}
     note = write_profile(paths, data)
     if not paths.answers.exists():
         paths.answers.write_text("[]\n", encoding="utf-8")
@@ -598,6 +604,11 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
     if key and io.yes("Calibrate the fit cutoff now (label ~40 jobs, about 10 minutes)?", False):
         from .calibrate import run_calibration
         run_calibration(ctx, ask=lambda p: io.ask(p.rstrip(": ")), say=io.say)
+    if sys.platform == "win32" and io.yes("Put a Cygnus icon on your desktop (PowerShell with "
+                                          "`autoapply run --review --limit` typed in)?", True):
+        from .shortcut import shortcut_command
+        shortcut_command(paths, str(paths.root) if paths.root.resolve() != Paths.resolve(None).root.resolve()
+                         else None)
     if mode != "manual" and sys.platform == "win32" and io.yes("Install the Windows scheduled task now?", True):
         from .scheduler_windows import schedule_command
         schedule_command("install", ctx, str(paths.root))

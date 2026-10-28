@@ -730,3 +730,100 @@ def test_discord_summary_says_how_long_it_took(make_ctx):
     ctx.notifier.discord.send = lambda text: sent.append(text) or True
     ctx.notifier.run_summary({"timing": {"total": 600, "forms": 4, "form_avg": 90}}, 1.0, 5.0, run_cost=0.2)
     assert "Took 10m 00s for 4 applications (1m 30s each)" in sent[0]
+
+
+# ---- how much of a run, and of a month, one company may take ----------------
+
+def _another(ctx, key, company, score, posted):
+    """A scored posting like Acme's, under another key, company, fit score and date."""
+    from autoapply.ledger import ENRICHED, SCORED
+    led = ctx.ledger
+    src = led.get("greenhouse:acme:1001")
+    data = {k: src.get(k) for k in ("source_name", "title", "location", "tier", "role", "ats",
+                                    "board_token", "apply_url", "first_seen")}
+    data.update(company=company, posted_at=posted, ats_job_id=key.rsplit(":", 1)[-1], source_ref=key)
+    led.upsert_discovered(key, data)
+    led.set_state(key, ENRICHED)
+    led.set_state(key, SCORED)
+    led.save_score(key, {**led.score("greenhouse:acme:1001"), "score": score}, "m", "v", "h")
+
+
+def _sent(ctx, key, company, days_ago):
+    """An application to `company` sent `days_ago` days ago."""
+    from datetime import datetime, timedelta, timezone
+    from autoapply.ledger import FILLING, READY, SUBMITTED
+    _another(ctx, key, company, 70, "2026-01-01")
+    led = ctx.ledger
+    led.set_state(key, FILLING)
+    led.set_state(key, READY)
+    at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    led.upsert_application(key, lane=READY, submitted_at=at)
+    led.set_state(key, SUBMITTED)
+
+
+def test_one_posting_per_company_per_run_and_it_is_the_best_fit(make_ctx, transport):
+    ctx = _scored(make_ctx)
+    ctx.profile.limits.per_company_per_run = 1
+    _another(ctx, "greenhouse:acme:2001", "Acme", 95, "2026-01-02")       # older, but the best fit
+    _another(ctx, "greenhouse:acme:2002", "ACME Inc.", 60, "2099-01-01")  # newest; one company with Acme
+    st = RunStats()
+    keys = fill_candidates(ctx, None, st)
+    acme = [k for k in keys if ctx.ledger.get(k).get("company").lower().startswith("acme")]
+    assert acme == ["greenhouse:acme:2001"]
+    assert len(keys) == 3 and st["company_run_cap"] == 2                     # Airbnb and Gamma still go
+    assert ctx.ledger.get("greenhouse:acme:1001").state == "scored"         # the others wait
+
+
+def test_a_limited_run_reaches_different_companies(make_ctx, transport):
+    ctx = _scored(make_ctx)
+    ctx.profile.limits.per_company_per_run = 1
+    for i in range(5):
+        _another(ctx, f"greenhouse:acme:30{i}", "Acme", 80, f"2099-01-0{i + 1}")
+    keys = fill_candidates(ctx, 3)
+    assert len({ctx.ledger.get(k).get("company") for k in keys}) == 3
+
+
+def test_no_per_run_limit_when_it_is_null(make_ctx, transport):
+    ctx = _scored(make_ctx)
+    _another(ctx, "greenhouse:acme:2001", "Acme", 95, "2026-01-02")
+    assert len(fill_candidates(ctx, None)) == 4
+
+
+def test_a_company_at_its_limit_is_paused_until_the_window_allows(make_ctx, transport):
+    from datetime import date, timedelta
+    from autoapply.companies import pauses, resume
+    from autoapply.pipeline import status_report
+    ctx = _scored(make_ctx)
+    ctx.profile.limits.company_max, ctx.profile.limits.company_days = 2, 30
+    _sent(ctx, "greenhouse:airbnb:91", "Airbnb", 10)
+    _sent(ctx, "greenhouse:airbnb:92", "airbnb", 3)
+    _sent(ctx, "greenhouse:airbnb:93", "Airbnb", 45)                           # outside the window
+    p = pauses(ctx)["airbnb"]
+    assert p["auto"] == 2 and p["until"] == (date.today() + timedelta(days=19)).isoformat()
+    st = RunStats()
+    assert "greenhouse:airbnb:7826337" not in fill_candidates(ctx, None, st) and st["company_paused"] == 1
+    assert "Airbnb paused until" in status_report(ctx) and "(2 applications in 30 days)" in status_report(ctx)
+    assert resume(ctx, "airbnb") and "airbnb" not in pauses(ctx)               # earlier sends stop counting
+    assert "greenhouse:airbnb:7826337" in fill_candidates(ctx, None)
+
+
+def test_one_under_the_limit_is_not_paused(make_ctx, transport):
+    from autoapply.companies import pauses
+    ctx = _scored(make_ctx)
+    ctx.profile.limits.company_max = 2
+    _sent(ctx, "greenhouse:airbnb:91", "Airbnb", 10)
+    assert "airbnb" not in pauses(ctx)
+    assert "greenhouse:airbnb:7826337" in fill_candidates(ctx, None)
+
+
+def test_applications_in_flight_count_toward_the_limit(make_ctx, transport):
+    from autoapply.ledger import FILLING, READY
+    ctx = _scored(make_ctx)
+    ctx.profile.limits.company_max = 2
+    _sent(ctx, "greenhouse:acme:91", "Acme", 5)
+    _another(ctx, "greenhouse:acme:92", "Acme", 70, "2026-01-01")              # waiting in Ready
+    ctx.ledger.set_state("greenhouse:acme:92", FILLING)
+    ctx.ledger.set_state("greenhouse:acme:92", READY)
+    st = RunStats()
+    keys = fill_candidates(ctx, None, st)
+    assert "greenhouse:acme:1001" not in keys and st["company_limit"] == 1

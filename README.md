@@ -64,8 +64,11 @@ autoapply mail [login | test | recent]           # read-only mailbox for securit
 autoapply companies [pause|resume "<name>"] [--days 30]  # pause a company (30-day limit), see company names
 autoapply run --company "capital one" --skip-company acme  # this run: only / not these companies
 autoapply schedule install|remove|show           # Windows Task Scheduler
+autoapply shortcut [--name N] [--command "..."]  # desktop icon: PowerShell, venv on, run command typed in
 autoapply health                                 # the pre-run checks on their own
 ```
+
+**Desktop shortcut.** Run `autoapply shortcut` once from your Cygnus folder with the virtual environment active (setup also offers it). It puts a **Cygnus** icon on your desktop. Clicking it opens PowerShell in that folder with the virtual environment active and `autoapply run --review --limit ` already typed at the prompt: type a number and press Enter. Nothing runs until you do. The icon opens `start-autoapply.ps1` in your profile folder, which you can edit. `--command "autoapply review"` types something else, and `--name` gives a second icon its own name.
 
 Global options: `--profile-dir PATH` (or `AUTOAPPLY_HOME`) and `--verbose`. Each run writes a log file to `logs\`.
 
@@ -197,6 +200,18 @@ autoapply run --review --skip-company "capital one, acme"
 - Only those postings are fetched, scored and filled. Everything else waits, untouched, for a later run.
 - A name matches the company's own name or its first words, and spaces don't matter: "capital one" matches "Capital One Financial" and "CapitalOne".
 - `autoapply companies` lists the companies with postings waiting, so you can see the exact names.
+
+**Spreading runs across companies.** Big employers post dozens of openings, and on their own they would take most of a run. Two settings in `profile.yaml` (also asked in `autoapply setup`) stop that:
+
+```yaml
+limits:
+  per_company_per_run: 1   # at most 1 application per company in a run (null = no limit)
+  company_max: 3           # pause a company once 3 applications went to it...
+  company_days: 30         # ...within 30 days (company_max null = never)
+```
+
+- **One per company per run** (on by default). Each company's slot goes to its best-fit posting, and the newest breaks a tie. Its other postings stay scored and fill on later runs. A `--limit 10` run reaches 10 different companies. The run summary counts the ones waiting.
+- **Automatic pause** (off until you set `company_max`). Once that many applications have been sent to a company within `company_days` days, it is paused like a pause of your own, and the card says why: "Capital One paused until Nov 20 (3 applications in 30 days)". It lifts by itself when the oldest of them drops out of the window. A run never fills one that would take a company past its limit, counting the ones already waiting in Ready, Needs input or Stuck. **Approve all** stops sending to a company the moment it reaches its limit. `autoapply companies resume <name>` ends an automatic pause too: sends before that day stop counting.
 
 **Pausing a company** (for example, you've reached its limit of applications per 30 days):
 

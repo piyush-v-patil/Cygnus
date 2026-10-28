@@ -148,6 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="all = ready + needs_input + stuck; tested = approved during --test runs (never sent)")
     b = sub.add_parser("browser", help="open the tool's browser (Simplify login, consent, profile)")
     b.add_argument("--url", help="page to open (default: the Simplify login page)")
+    sc = sub.add_parser("shortcut", help="desktop icon: PowerShell in this venv with the run command typed in")
+    sc.add_argument("--name", default="Cygnus", help="the icon's name (default Cygnus)")
+    sc.add_argument("--command", default="autoapply run --review --limit ",
+                    help='what is typed at the prompt (default "autoapply run --review --limit ")')
     s = sub.add_parser("schedule", help="Windows Task Scheduler")
     s.add_argument("action", choices=["install", "remove", "show"])
     a = sub.add_parser("answers", help="the answer bank")
@@ -228,6 +232,10 @@ def _dispatch(args, paths: Paths) -> int:
                 bank.save()
             _open_editor(paths.answers)
         return 0
+
+    if args.cmd == "shortcut":
+        from .shortcut import shortcut_command
+        return shortcut_command(paths, args.profile_dir, args.name, args.command)
 
     if args.cmd == "schedule":
         from .scheduler_windows import schedule_command
