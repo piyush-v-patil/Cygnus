@@ -82,3 +82,17 @@ mail:                               # read security codes and Workday verify/res
   enabled: false
   imap_host: imap.gmail.com
   wait_s: 180                       # how long to wait for the email before leaving it to you
+
+work:                               # standing answers to work-preference questions; null = ask me
+  relocate: true                    # "Are you willing to relocate / move to Austin?"
+  anywhere_in_us: true              # "...open to any of our US office locations?"
+  onsite: true                      # "...able to work on-site / in office 5 days a week?"
+  hybrid: true
+  remote: true
+  relocation_assistance: false      # "Will you need relocation assistance?" -> No
+  only_resume_employers: true       # "Have you worked for <company>?" -> No unless your resume names it
+
+limits:                             # how much of a run, and of a month, one company may take
+  per_company_per_run: 1            # its best-fit posting fills; the others wait for later runs; null = no limit
+  company_max: null                 # e.g. 3: pause a company once 3 applications went to it...
+  company_days: 30                  # ...within 30 days (lifts by itself; `companies resume` ends it)
