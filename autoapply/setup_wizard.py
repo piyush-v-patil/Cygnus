@@ -257,6 +257,33 @@ YES_NO = {"y", "yes", "n", "no"}
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 
+WORK_QUESTIONS = (
+    ("relocate", "Willing to relocate", "yes"),
+    ("anywhere_in_us", "Open to any US location", "yes"),
+    ("onsite", "Will work on-site (in the office every day)", "yes"),
+    ("hybrid", "Will work hybrid", "yes"),
+    ("remote", "Will work remotely", "yes"),
+    ("relocation_assistance", "Need relocation assistance", "no"),
+)
+
+
+def step_work(io: IO) -> dict | None:
+    """Standing answers to work-preference questions (profile `work:`); None = skipped."""
+    io.say("\n== Work preferences ==\n  Forms ask the same things again and again: will you relocate, work on-site,\n"
+           "  hybrid or remote, have you worked here before. Answer once and Cygnus answers them\n"
+           "  for you (never visa, legal or demographic questions). \"ask\" leaves one to you.")
+    if not io.yes("Set your work preferences now?", True):
+        return None
+    work: dict = {}
+    for key, prompt, default in WORK_QUESTIONS:
+        v = io.choose(prompt, ["yes", "no", "ask"], default)
+        work[key] = None if v == "ask" else v == "yes"
+    work["only_resume_employers"] = io.yes(
+        "Is every employer you have worked for on your resume? (then \"have you worked for <company>?\" "
+        "is answered No when the resume does not name it)", True)
+    return work
+
+
 def ask_repo(io: IO, prompt: str, default: str) -> str:
     """A text prompt answered with 'y' would save 'y' as the repo name; ask again instead."""
     while True:
@@ -535,6 +562,7 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
         except Exception as e:  # noqa: BLE001
             io.say(f"  Draft failed ({type(e).__name__}); continuing with defaults.")
     filters, visa = step_preferences(io, draft)
+    work = step_work(io)
     sources = step_sources(paths, io)
     discord = step_discord(paths, io)
     if step_workday(paths, io):
@@ -559,6 +587,8 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
         "testing": {"never_submit": False},
         "mail": {"enabled": mail},
     }
+    if work is not None:
+        data["work"] = work
     note = write_profile(paths, data)
     if not paths.answers.exists():
         paths.answers.write_text("[]\n", encoding="utf-8")

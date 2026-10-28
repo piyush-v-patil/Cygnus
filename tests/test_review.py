@@ -273,3 +273,31 @@ def test_paused_company_card_says_so_and_approve_all_leaves_it(client):
     r = client.post("/approve-all", data={"csrf": client.csrf, "ids": str(app_id)})
     assert "Left for you (company paused): Acme" in r.text
     assert client.ctx.ledger.get("greenhouse:a:1").state == READY
+
+
+def test_needs_input_prefills_the_closest_saved_answer_with_where_it_came_from(client):
+    client.ctx.answers.add("Open to working on-site 5 days per week?", "yes_no", "Yes")
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme", extra_missing=[
+        {"key": "id:visa", "label": "Will you now or in the future require sponsorship?", "kind": "combobox",
+         "answer_kind": "yes_no", "options": ["Yes", "No"], "required": True, "reason": "",
+         "question": "will you now or in the future require sponsorship"}])
+    client.ctx.answers.add("Do you require sponsorship?", "yes_no", "No")
+    html = client.get("/lane/needs_input").text
+    assert "<option selected>Yes</option>" in html
+    assert "pre-filled from: <b>your answer to “Open to working on-site 5 days per week?”</b>" in html
+    visa = html.split("require sponsorship?", 1)[1].split("</div>", 1)[0]
+    assert "selected" not in visa                                      # never suggested
+    # saving the card is what accepts it, and the new wording is learned too
+    app_id = client.ctx.ledger.application("greenhouse:a:1")["id"]
+    client.post(f"/app/{app_id}/answers", data={"csrf": client.csrf, "then": "save",
+                                                "a__id:q105": "Yes", "a__id:visa": "No"},
+                follow_redirects=False)
+    assert client.ctx.answers.lookup(Q, "yes_no") == "Yes"
+
+
+def test_needs_input_prefills_your_work_preferences(client):
+    client.ctx.profile.work.onsite = True
+    needs_input_app(client.ctx, "greenhouse:a:1", "Acme")
+    html = client.get("/lane/needs_input").text
+    assert "<option selected>Yes</option>" in html
+    assert "pre-filled from: <b>your work preferences: you will work on-site</b>" in html

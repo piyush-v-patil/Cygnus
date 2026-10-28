@@ -23,6 +23,7 @@ from ..llm import BudgetExceeded, LLMError, LLMUnavailable
 from ..llm.answer import answer_fields
 from ..llm.cover_letter import render_pdf, write_cover_letter
 from ..normalize import normalize_question, slug
+from ..questions import standing_value
 from .fields import Field, FillError, combobox_options, safe_screenshot, enumerate_fields, fill_field
 from .simplify import SimplifyError, autofill
 
@@ -47,7 +48,7 @@ class PlanEntry:
     label: str
     kind: str
     value: str | list
-    source: str               # simplify | answer_bank | claude | user | resume | cover_letter
+    source: str               # simplify | answer_bank | work_prefs | claude | user | resume | cover_letter
     required: bool = False
     options: list = field(default_factory=list)
     evidence: str | None = None
@@ -413,7 +414,7 @@ async def final_check(page, hints: dict, plan: list, missing: list) -> None:
     by_key = {f.key: f for f in final}
     for p in list(plan):
         f = by_key.get(p.key)
-        if p.source in ("answer_bank", "claude", "profile", "user") and f is not None and f.empty:
+        if p.source in ("answer_bank", "work_prefs", "claude", "profile", "user") and f is not None and f.empty:
             plan.remove(p)
             if f.required:
                 m = _missing(f, "the form did not keep the answer")
@@ -428,7 +429,8 @@ async def final_check(page, hints: dict, plan: list, missing: list) -> None:
 async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list, missing: list, generated: list,
                       posting: dict, desc: str, resume_text: str, step, known: dict | None = None) -> None:
     """Fill what Simplify left empty: answers already given for this application
-    (`known`, by question), the answer bank, a cover letter, then Claude. What none
+    (`known`, by question), the answer bank, your work preferences (profile `work:`),
+    a cover letter, then Claude. What none
     of them may answer goes to `missing`."""
     profile = ctx.profile
     known = known or {}
@@ -462,6 +464,14 @@ async def fill_blanks(ctx, page, fields: list[Field], skip: set[str], plan: list
         if banked is not None:
             if await _try_fill(page, f, banked, missing):
                 plan.append(PlanEntry(f.key, f.label, f.kind, banked, "answer_bank", f.required, f.options))
+            continue
+        standing = None if (f.section or f.is_eeo or f.kind in ("checkbox", "checkbox_group")) else \
+            standing_value(f.label, f.answer_kind, None if truncated else (f.options or None),
+                           profile.work, posting.get("company", ""), resume_text)
+        if standing is not None:
+            if await _try_fill(page, f, standing[0], missing):
+                plan.append(PlanEntry(f.key, f.label, f.kind, standing[0], "work_prefs", f.required,
+                                      f.options, facts_used=[standing[1]]))
             continue
         if f.is_cover_letter:
             if f.required and f.kind in ("text", "textarea"):

@@ -25,7 +25,8 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 TEMPLATES.env.filters["web_url"] = lambda u: u if isinstance(u, str) and u.lower().startswith(("https://", "http://")) else ""
 LANE_TITLES = {READY: "Ready", NEEDS_INPUT: "Needs input", STUCK: "Stuck"}
 SOURCE_LABEL = {"simplify": "Simplify", "answer_bank": "Saved answer", "claude": "Claude", "user": "You",
-                "profile": "Your visa answers", "workday": "Workday account",
+                "profile": "Your visa answers", "work_prefs": "Your work preferences",
+                "workday": "Workday account",
                 "resume": "Resume", "cover_letter": "Claude (cover letter)"}
 
 
@@ -125,6 +126,35 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
         if not secrets.compare_digest(token or "", sess.csrf):
             raise HTTPException(403, "stale page - reload and try again")
 
+    def suggest(missing: list[dict], company: str, resume_file: str | None) -> list[dict]:
+        """Needs-input questions with a pre-filled answer where one is close at hand:
+        your work preferences, else the saved answer to a question worded differently.
+        Shown with where it came from; saving the card is what accepts it."""
+        from ..questions import near_answer, protected, standing_value
+        resume_text = None
+        out = []
+        for m in missing:
+            m = dict(m)
+            out.append(m)
+            if m.get("suggested") or m.get("no_bank") or protected(m.get("label", "")) \
+                    or m.get("kind") in ("checkbox", "checkbox_group", "file"):
+                continue
+            opts = m.get("options") or None
+            if resume_text is None:
+                try:
+                    resume_text = ctx.resumes.text(resume_file) if resume_file else ""
+                except Exception:  # noqa: BLE001 - a moved resume only costs the employer rule
+                    resume_text = ""
+            hit = standing_value(m["label"], m.get("answer_kind", ""), opts, ctx.profile.work,
+                                 company, resume_text)
+            if hit is not None:
+                m["suggested"], m["from"] = hit[0], f"your work preferences: {hit[1]}"
+                continue
+            near = near_answer(ctx.answers.items, m["label"], m.get("answer_kind", ""), opts)
+            if near is not None:
+                m["suggested"], m["from"] = near[0], f"your answer to “{near[1]}”"
+        return out
+
     def view(app_row: dict) -> dict:
         led = ctx.ledger
         key = app_row["posting_key"]
@@ -136,7 +166,9 @@ def create_app(ctx, session: Session | None = None, port: int = 8765) -> FastAPI
                 "paused": until_text(pause, p.get("company")) if pause else None,
                 "live": ctx.has_live_tab(key),
                 "score": sc, "waited": _ago(app_row.get("updated_at")),
-                "plan": app_row.get("fill_plan") or [], "missing": app_row.get("missing") or []}
+                "plan": app_row.get("fill_plan") or [],
+                "missing": suggest(app_row.get("missing") or [], p.get("company", "") if p else "",
+                                   app_row.get("resume_file"))}
 
     def page(request: Request, name: str, **kw):
         led = ctx.ledger
