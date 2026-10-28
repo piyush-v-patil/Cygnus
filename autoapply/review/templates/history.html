@@ -1,13 +1,16 @@
 {% extends "base.html" %}{% block body %}
-<form method="get" action="/history" style="margin-bottom:14px"><input type="text" name="q" value="{{q}}" placeholder="Search by company"></form>
+<form method="get" action="/history" class="toolbar"><input type="text" name="q" value="{{q}}" placeholder="Search by company" style="max-width:360px"><button>Search</button></form>
 {% for c in cards %}{% set a = c.app %}{% set p = c.p %}
-<div class="card"><h2>{{p.company}} — {{p.title}}</h2>
-  <div class="meta">{{c.state}} · {{a.submitted_at or a.updated_at}} · resume {{a.resume_file}}{% if c.score %} · fit {{c.score.score}}{% endif %}
-   · {% if p.apply_url|web_url %}<a href="{{p.apply_url|web_url}}" target="_blank" rel="noreferrer">posting</a>{% endif %}</div>
-  {% if a.submission_dir %}<div class="actions">
-    <a href="/app/{{a.id}}/file/form.png" target="_blank">form.png</a> · <a href="/app/{{a.id}}/file/after_submit.png" target="_blank">after_submit.png</a>
-    · <a href="/app/{{a.id}}/file/fields.json" target="_blank">fields.json</a> · <a href="/app/{{a.id}}/file/meta.json" target="_blank">meta.json</a>
-    · <a href="/app/{{a.id}}/file/job.txt" target="_blank">job.txt</a></div>
+<div class="card plain"><h2>{{p.company}} — {{p.title}}</h2>
+  <div class="meta">{{c.state.replace('_', ' ')}} · {{a.submitted_at or a.updated_at}} · resume <b>{{a.resume_file}}</b>
+   {% if p.apply_url|web_url %} · <a href="{{p.apply_url|web_url}}" target="_blank" rel="noreferrer">job posting ↗</a>{% endif %}</div>
+  <div class="flags">{% if c.score %}<span class="flag fit {{'hi' if c.score.score >= 80 else 'mid' if c.score.score >= 65 else ''}}">fit {{c.score.score}}</span>{% endif %}</div>
+  {% if a.submission_dir %}<div class="files">
+    <a class="btn" href="/app/{{a.id}}/file/form.png" target="_blank">Form</a>
+    <a class="btn" href="/app/{{a.id}}/file/after_submit.png" target="_blank">After submit</a>
+    <a class="btn" href="/app/{{a.id}}/file/fields.json" target="_blank">Fields</a>
+    <a class="btn" href="/app/{{a.id}}/file/job.txt" target="_blank">Job description</a>
+    <a class="btn" href="/app/{{a.id}}/file/meta.json" target="_blank">Details</a></div>
   <div class="meta">Saved in {{a.submission_dir}}</div>{% endif %}
 </div>{% else %}<div class="empty">No submitted applications{% if q %} for “{{q}}”{% endif %}.</div>{% endfor %}
 {% endblock %}
