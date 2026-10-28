@@ -45,6 +45,7 @@ def launcher_script(command: str, workdir: str, venv: Path | None, profile_dir: 
     lines += [
         "$host.UI.RawUI.WindowTitle = 'Cygnus'",
         "Write-Host 'Cygnus is ready. Type how many applications and press Enter.' -ForegroundColor Cyan",
+        "Write-Host '(Other commands: autoapply cheatsheet)' -ForegroundColor DarkGray",
         "if (Get-Module -ListAvailable PSReadLine) {",
         # typed once the prompt is waiting; nothing is run until you press Enter
         "    $null = Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Action {",

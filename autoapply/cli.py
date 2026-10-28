@@ -148,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--test", action="store_true", help="never click Submit in this session")
     sub.add_parser("status", help="counts per state, spend, last run")
     sub.add_parser("settings", help="every setting with the value in use, defaults included")
+    sub.add_parser("cheatsheet", help="the commands for common situations (CHEATSHEET.md)")
     rq = sub.add_parser("requeue", help="send queued applications back to be filled again on the next run")
     rq.add_argument("--lane", choices=["ready", "needs_input", "stuck", "all", "tested"], default="all",
                     help="all = ready + needs_input + stuck; tested = approved during --test runs (never sent)")
@@ -283,6 +284,13 @@ def _dispatch(args, paths: Paths) -> int:
             clear_accounts(ctx, keys)         # a failed Workday sign-in gets another try
         print(f"{len(keys)} application(s) will be filled again on the next `autoapply run`."
               " Your saved answers are kept.")
+        return 0
+
+    if args.cmd == "cheatsheet":
+        sheet = Path(__file__).resolve().parents[1] / "CHEATSHEET.md"
+        print(sheet.read_text(encoding="utf-8") if sheet.exists() else
+              "CHEATSHEET.md is in the Cygnus folder you installed from, and at "
+              "https://github.com/piyush-v-patil/Cygnus/blob/main/CHEATSHEET.md")
         return 0
 
     if args.cmd == "settings":

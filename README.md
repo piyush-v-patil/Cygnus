@@ -59,12 +59,15 @@ Before the first run:
 
 ## Daily use
 
+The commands for the common situations (pausing a company, a stuck application, changing one setting…) are in [CHEATSHEET.md](CHEATSHEET.md) in this folder; `autoapply cheatsheet` prints it.
+
 ```
 autoapply run [--limit N] [--no-fill] [--test]   # health → sync → filter → score → fill → queue → notify
 autoapply run --review [--limit N] [--test]      # same, then review right away with the filled forms still open
 autoapply review                                 # open the review queue + the tool's browser
 autoapply status                                 # counts per state, spend, last run's numbers
 autoapply settings                               # every setting with the value in use; "# default" = not in your profile.yaml
+autoapply cheatsheet                             # the commands for common situations
 autoapply setup new | <part> [<part>...]         # ask only new parts, or only these (work, limits, mail, ...)
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
