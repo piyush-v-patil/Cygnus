@@ -827,3 +827,115 @@ def test_applications_in_flight_count_toward_the_limit(make_ctx, transport):
     st = RunStats()
     keys = fill_candidates(ctx, None, st)
     assert "greenhouse:acme:1001" not in keys and st["company_limit"] == 1
+
+
+# ---- several Claude calls and page fetches at once --------------------------
+
+def _slow(responder, delay=0.15):
+    """A responder that takes `delay` seconds and records how many calls overlapped."""
+    import threading
+    import time as _t
+    seen = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def respond(params):
+        with lock:
+            seen["now"] += 1
+            seen["most"] = max(seen["most"], seen["now"])
+        _t.sleep(delay)
+        with lock:
+            seen["now"] -= 1
+        return responder(params)
+    return respond, seen
+
+
+def _states(ctx):
+    return ctx.ledger.db.execute("SELECT posting_key, state, reason FROM postings ORDER BY 1").fetchall()
+
+
+def test_scoring_in_parallel_ends_exactly_as_one_at_a_time(make_ctx, transport):
+    from tests.conftest import default_responder
+    one = make_ctx()
+    one.profile.llm.parallel_calls = 1
+    sync(one, RunStats())
+    enrich(one, RunStats(), None, clients()[0])
+    passed_one = score(one, RunStats())
+    serial = [tuple(r) for r in _states(one)]
+
+    many = make_ctx()       # the same profile folder: start from a clean ledger
+    many.ledger.db.execute("DELETE FROM postings")
+    many.ledger.db.execute("DELETE FROM scores")
+    many.profile.llm.parallel_calls = 4
+    respond, seen = _slow(default_responder)
+    transport.responder = respond
+    sync(many, RunStats())
+    enrich(many, RunStats(), None, clients()[0])
+    st = RunStats()
+    passed_many = score(many, st)
+    assert [tuple(r) for r in _states(many)] == serial and passed_many == passed_one
+    assert seen["most"] > 1 and st["scored"] >= 2
+
+
+def test_parallel_scoring_keeps_to_the_limit(make_ctx, transport):
+    ctx = make_ctx()
+    ctx.profile.llm.parallel_calls = 4
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    st = RunStats()
+    score(ctx, st, limit=2)
+    assert st["scored"] == 2
+
+
+def test_a_budget_stop_mid_batch_keeps_what_was_scored(make_ctx, transport):
+    from autoapply.llm import BudgetExceeded
+    from tests.conftest import default_responder
+    ctx = make_ctx()
+    ctx.profile.llm.parallel_calls = 4
+    sync(ctx, RunStats())
+    enrich(ctx, RunStats(), None, clients()[0])
+    n = {"calls": 0}
+
+    def respond(params):
+        n["calls"] += 1
+        if n["calls"] == 2:
+            raise BudgetExceeded("month-to-date spend reached the budget")
+        return default_responder(params)
+    transport.responder = respond
+    st = RunStats()
+    score(ctx, st)
+    assert "budget" in st["stopped"] and st["scored"] >= 1
+    assert any(r["state"] == "enriched" for r in _states(ctx))        # the unscored one waits
+
+
+def test_pages_are_fetched_in_parallel_and_one_failure_stops_nothing(make_ctx):
+    import threading
+    import time as _t
+    ctx = make_ctx()
+    sync(ctx, RunStats())
+    cl, fake = clients(fail={"greenhouse:acme:1001"})
+    seen, lock = {"now": 0, "most": 0}, threading.Lock()
+    fetch = fake.fetch
+
+    def slow_fetch(ref):
+        with lock:
+            seen["now"] += 1
+            seen["most"] = max(seen["most"], seen["now"])
+        _t.sleep(0.1)
+        with lock:
+            seen["now"] -= 1
+        return fetch(ref)
+    fake.fetch = slow_fetch
+    st = RunStats()
+    done = enrich(ctx, st, None, cl)
+    assert seen["most"] > 1
+    assert ctx.ledger.get("greenhouse:acme:1001").state == "error" and len(done) >= 2
+
+
+def test_the_ledger_takes_writes_from_several_threads(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from autoapply.ledger import Ledger
+    led = Ledger(tmp_path / "l.sqlite")
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: (led.record_usage("t", "m", {"input_tokens": i}, 0.01, None),
+                                 led.month_spend()), range(200)))
+    assert round(led.month_spend(), 2) == 2.0

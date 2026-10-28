@@ -59,12 +59,15 @@ Before the first run:
 
 ## Daily use
 
+The commands for the common situations (pausing a company, a stuck application, changing one setting…) are in [CHEATSHEET.md](CHEATSHEET.md) in this folder; `autoapply cheatsheet` prints it.
+
 ```
 autoapply run [--limit N] [--no-fill] [--test]   # health → sync → filter → score → fill → queue → notify
 autoapply run --review [--limit N] [--test]      # same, then review right away with the filled forms still open
 autoapply review                                 # open the review queue + the tool's browser
 autoapply status                                 # counts per state, spend, last run's numbers
 autoapply settings                               # every setting with the value in use; "# default" = not in your profile.yaml
+autoapply cheatsheet                             # the commands for common situations
 autoapply setup new | <part> [<part>...]         # ask only new parts, or only these (work, limits, mail, ...)
 autoapply calibrate [--rescore]                  # label ~40 jobs blind; suggests a cutoff
 autoapply answers list|edit                      # your answer bank
@@ -258,6 +261,16 @@ What it reads:
 Simplify has a setting, *Continue and submit automatically*, that would click Continue, or Submit, by itself. Cygnus switches it off every time it starts the browser. If it can't be switched off, the run stops instead of risking an application you did not approve.
 
 Several forms are filled in parallel (`browser.parallel_tabs`), but Simplify works on one at a time. Simplify pauses while its tab is hidden, so each form comes to the front of the tool's browser for its turn. Cygnus waits for Simplify's own "finished" status. If Simplify doesn't report one, it falls back to watching the Autofill button and the form.
+
+### Speed
+
+Two settings decide how much happens at once. Neither changes what goes into a form. `autoapply setup speed` asks for both.
+
+- **Scoring and fetching.** Job pages are fetched 6 at a time, and Claude scores `llm.parallel_calls` postings at a time (default 4; 1 = one at a time). The results and decisions are the same as one at a time.
+- **Browser windows** (`browser.windows`, default 1). Simplify only works in the front tab of a window: it pauses whenever its tab is hidden. One window therefore means one form in Simplify's hands at a time, and one Workday application, which keeps the front for its whole walk. With `windows: 2` or `3`, each window has its own front, so that many forms (and Workday walks) fill truly at once.
+  - Keep the windows open. Moving them, or letting other windows cover them, is fine; minimising them is not.
+  - `browser.parallel_tabs` is the total number of forms open at once across all windows, so keep it at least as high as `windows`.
+  - **Safety net.** If Simplify can't work in a second window (minimised, or your PC reports it hidden), that form isn't marked Stuck. It goes back in the queue for the first window, the rest of the run uses one window, and you get one warning. If you see that warning often, set `windows: 1`.
 
 ### US-person-only employers
 

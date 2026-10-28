@@ -70,3 +70,9 @@ def test_cli_setup_with_parts(profile_dir, monkeypatch, capsys):
     assert main(["--profile-dir", str(profile_dir.root), "setup", "limits"]) == 0
     assert "Saved limits to" in capsys.readouterr().out
     assert load_profile(profile_dir).limits.company_max is None
+
+
+def test_setup_speed_sets_windows_tabs_and_calls(profile_dir):
+    assert run_sections(profile_dir, ["speed"], script("3", "2", "6")[0]) == 0
+    b, l = load_profile(profile_dir).browser, load_profile(profile_dir).llm
+    assert (b.windows, b.parallel_tabs, l.parallel_calls) == (3, 3, 6)   # tabs never fewer than windows

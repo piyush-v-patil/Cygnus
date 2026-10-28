@@ -651,6 +651,20 @@ def run_wizard(paths: Paths, io: IO | None = None) -> int:
 # ------------------------------------------------------ one part at a time --
 # `autoapply setup work limits` asks only those parts and changes only their settings;
 # `autoapply setup new` asks the parts your profile.yaml does not have yet (after an update).
+def step_speed(io: IO, cur: dict) -> dict:
+    """How much happens at once: browser windows (each fills one form in front of it) and
+    Claude scoring calls. Neither changes what goes into a form."""
+    b, l = cur.get("browser") or {}, cur.get("llm") or {}
+    io.say("\n== Speed ==\n  Simplify only works in a window's front tab, so each browser window fills one form\n"
+           "  at a time. 2-3 windows fill 2-3 at once; keep them open, not minimised.")
+    windows = ask_number(io, "Browser windows (1-4)", b.get("windows", 1), 1, 4)
+    tabs = ask_number(io, "Forms open at once in all (parallel_tabs, 1-8)",
+                      max(b.get("parallel_tabs", 3), windows), 1, 8)
+    calls = ask_number(io, "Claude scoring calls at once (1-8)", l.get("parallel_calls", 4), 1, 8)
+    return {"browser": {"windows": windows, "parallel_tabs": max(tabs, windows)},
+            "llm": {"parallel_calls": calls}}
+
+
 def _sec_work(paths, io, cur):
     w = step_work(io, cur.get("work"))
     return {"work": w} if w is not None else None
@@ -694,6 +708,8 @@ SECTIONS: dict[str, tuple[str, str, Callable]] = {
     "sources": ("", "where jobs come from (job-monitor, CSV)", _sec_sources),
     "resumes": ("", "your resume files",
                 lambda paths, io, cur: {"resumes": step_resumes(paths, io)}),
+    "speed": ("", "browser windows and forms filled at once, Claude calls at once",
+              lambda paths, io, cur: step_speed(io, cur)),
     "simplify": ("", "the Simplify extension",
                  lambda paths, io, cur: {"browser": {"simplify_consent": step_simplify(paths, io)}}),
 }

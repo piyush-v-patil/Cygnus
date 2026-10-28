@@ -213,18 +213,33 @@ async def open_form(page, url: str, hints: dict, timeout_s: float) -> None:
         raise Stuck(blocker, "the page asks for a CAPTCHA or a login before the form")
 
 
-_simplify_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_simplify_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Lock]]" = \
+    weakref.WeakKeyDictionary()
+
+
+# the browser window this form works in (browser.windows): set by each fill worker
+_window: contextvars.ContextVar[int] = contextvars.ContextVar("browser_window", default=0)
+
+
+class WindowHidden(Exception):
+    """A second window is not visible (minimised, or covered on a PC that reports it), so
+    Simplify would wait there forever. The form goes back to the first window."""
+
+
+# what Simplify waiting in a hidden window looks like by the time the form gives up
+WINDOW_STALLS = ("simplify_did_not_fill", "simplify_not_ready")
 
 
 def simplify_turn() -> asyncio.Lock:
-    """One form at a time gets Simplify. Simplify pauses its filling while its tab is
-    hidden (VERIFIED in the 3.1.10 content script), and only the front tab of the
-    window is visible, so each form takes its turn in front."""
-    loop = asyncio.get_running_loop()
-    lock = _simplify_locks.get(loop)
-    if lock is None:
-        lock = _simplify_locks[loop] = asyncio.Lock()
-    return lock
+    """One form at a time per window gets Simplify. Simplify pauses its filling while its
+    tab is hidden (`document.visibilityState`, VERIFIED in the 3.1.10 and 3.1.11 content
+    scripts), and only the front tab of a window is visible, so each form takes its turn
+    in front of its window."""
+    per_window = _simplify_locks.setdefault(asyncio.get_running_loop(), {})
+    w = _window.get()
+    if w not in per_window:
+        per_window[w] = asyncio.Lock()
+    return per_window[w]
 
 
 # the running form's time book: waiting for another form's turn does not count against its limit
@@ -284,12 +299,25 @@ async def open_workday(ctx, page, posting_key: str) -> None:
         raise Stuck("page_load_failed", str(e).splitlines()[0][:200]) from e
 
 
+async def check_window_visible(page) -> None:
+    """In a second window, a hidden tab after coming to the front means the window itself is
+    minimised or covered: Simplify would wait there until the form timed out."""
+    if _window.get() > 0:
+        try:
+            hidden = await page.evaluate("document.visibilityState") == "hidden"
+        except Exception:  # noqa: BLE001
+            hidden = False
+        if hidden:
+            raise WindowHidden("the window is minimised or hidden")
+
+
 async def run_simplify(ctx, page, hints: dict) -> None:
     async with my_turn("    waiting for Simplify (one form at a time)"):
         try:
             await page.bring_to_front()
         except Exception:  # noqa: BLE001 - a tab that cannot come forward still gets its try
             log.debug("could not bring the tab to the front")
+        await check_window_visible(page)
         mock = getattr(ctx, "simplify_mock", None)
         if mock is not None:
             await mock(page)
@@ -345,7 +373,8 @@ async def fill_one(ctx, bs, posting_key: str, check_consistency: bool = False,
     desc = det.get("description_text") or ""
     posting = dict(row.data)
     track = track if track is not None else {}
-    page = await bs.new_page()
+    w = _window.get()
+    page = await bs.new_page(w) if w else await bs.new_page()
     track["page"] = page
     try:
         if hints.get("workday"):
@@ -571,14 +600,28 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
     # whole walk, so single-page forms go first instead of waiting behind it
     pending = [k for k in keys if not k.startswith("workday:")] + [k for k in keys if k.startswith("workday:")]
     busy: set[str] = set()                    # companies with a form in flight
-    busy_keys: set[str] = set()               # the postings in flight
-    state = {"stop": None, "probe_done": not getattr(ctx, "simplify_probe_pending", False)}
+    busy_keys: dict[str, int] = {}            # the postings in flight -> the window each is in
+    state = {"stop": None, "probe_done": not getattr(ctx, "simplify_probe_pending", False),
+             "windows": 1, "one_window": False}
 
     def company(k: str) -> str:
         return (led.get(k).get("company") or k).strip().lower()
 
     total = len(pending)
     done = {"n": 0}
+
+    def back_to_first_window(key: str, why: str) -> None:
+        """Simplify could not work in a second window: this form goes back in the queue for
+        the first window, and the rest of the run uses one window (nothing is lost)."""
+        led.set_state(key, SCORED, None, "requeued: filled in the first browser window instead")
+        pending.insert(0, key)
+        done["n"] -= 1
+        if not state["one_window"]:
+            state["one_window"] = True
+            msg = (f"Simplify could not work in a second browser window ({why}); this run goes on with "
+                   "one window. Keep the Cygnus windows open (not minimised), or set browser.windows: 1.")
+            log.warning(msg)
+            ctx.notifier.warn(msg)
 
     async def handle(bs, key):
         row = led.get(key)
@@ -617,8 +660,17 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             if not state["probe_done"] or not state.get("marked"):
                 state["probe_done"] = state["marked"] = True
                 _mark_simplify_good(ctx)
+        except WindowHidden as e:
+            page = getattr(e, "page", None)
+            log.info("    -> this window is hidden; back to the first window")
+            back_to_first_window(key, str(e))
         except Stuck as e:
             page = getattr(e, "page", None)
+            if _window.get() > 0 and (e.reason in WINDOW_STALLS or (
+                    e.reason == "timed_out" and "Simplify" in str(track.get("step", "")))):
+                log.info("    -> Simplify stalled in window %d; back to the first window", _window.get() + 1)
+                back_to_first_window(key, f"{e.reason} in window {_window.get() + 1}")
+                return
             log.info("    -> Stuck: %s", e)
             record_stuck(ctx, key, str(e), stats, screenshot=await _shot(ctx, page, key))
             if not state["probe_done"] and e.reason.startswith("simplify"):
@@ -657,12 +709,16 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
                 else:
                     await page.close()
 
-    async def worker(bs):
+    async def worker(bs, i: int):
         while not state["stop"]:
+            # each worker fills in its own window (browser.windows), back in the first once
+            # Simplify could not work in another
+            w = 0 if state["one_window"] else i % state["windows"]
+            _window.set(w)
             # one in-flight form per company (§8.1); asyncio is single-threaded,
             # so nothing can slip in between this check and busy.add()
-            # one company at a time, and one Workday application at a time (it needs the front)
-            wd_busy = any(b.startswith("workday:") for b in busy_keys)
+            # one company at a time, and one Workday application per window (it needs the front)
+            wd_busy = any(b.startswith("workday:") and bw == w for b, bw in busy_keys.items())
             key = next((k for k in pending if company(k) not in busy
                         and not (wd_busy and k.startswith("workday:"))), None)
             if key is None:
@@ -673,12 +729,12 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             pending.remove(key)
             co = company(key)
             busy.add(co)
-            busy_keys.add(key)
+            busy_keys[key] = w
             try:
                 await handle(bs, key)
             finally:
                 busy.discard(co)
-                busy_keys.discard(key)
+                busy_keys.pop(key, None)
 
     async def go(bs):
         if not state["probe_done"] and pending:
@@ -686,8 +742,9 @@ async def fill_many(ctx, keys: list[str], stats, session=None) -> None:
             await handle(bs, pending.pop(0))
         if state["stop"]:
             return
+        state["windows"] = getattr(bs, "window_count", 1)
         n = max(1, ctx.profile.browser.parallel_tabs)
-        await asyncio.gather(*(worker(bs) for _ in range(n)))
+        await asyncio.gather(*(worker(bs, i) for i in range(n)))
 
     if session is not None:
         await go(session)

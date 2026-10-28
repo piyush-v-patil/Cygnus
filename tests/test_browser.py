@@ -254,3 +254,91 @@ def test_work_preferences_fill_before_claude(bctx):
     entry = next(e for e in app["fill_plan"] if e["label"].startswith("Are you willing"))
     assert entry["source"] == "work_prefs" and entry["value"] == "Yes"
     assert entry["facts_used"] == ["you will work on-site"]
+
+
+# ---- several browser windows (browser.windows) ------------------------------
+
+def timed_mock(spans, delay=0.6):
+    """simplify_mock that takes `delay` seconds and records (start, end, window id) per form."""
+    import time as _t
+    inner = simplify_mock()
+
+    async def mock(page):
+        s = await page.context.new_cdp_session(page)
+        tid = (await s.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+        win = (await s.send("Browser.getWindowForTarget", {"targetId": tid}))["windowId"]
+        await s.detach()
+        t0 = _t.monotonic()
+        await asyncio.sleep(delay)
+        await inner(page)
+        spans.append((t0, _t.monotonic(), win))
+    return mock
+
+
+def _overlap(spans):
+    (a0, a1, _), (b0, b1, _) = sorted(spans)[:2]
+    return min(a1, b1) - max(a0, b0) > 0.2
+
+
+@pytest.mark.parametrize("windows", [1, 2])
+def test_each_window_gives_simplify_one_form_at_a_time(bctx, windows):
+    from autoapply.ledger import NEEDS_INPUT
+    bctx.profile.browser.windows = windows
+    bctx.profile.browser.parallel_tabs = 2
+    spans = []
+    bctx.simplify_mock = timed_mock(spans)
+    seed(bctx, GH)
+    seed(bctx, ASHBY, company="Gamma", role="ml-ai")
+    asyncio.run(fill_many(bctx, [GH, ASHBY], RunStats()))
+    assert len(spans) == 2
+    if windows == 1:
+        assert not _overlap(spans)                        # one at a time, as before
+    else:
+        assert _overlap(spans)                            # truly at once
+        assert spans[0][2] != spans[1][2]                 # each in its own window
+    for k in (GH, ASHBY):
+        assert bctx.ledger.get(k).state in (READY_STATE, NEEDS_INPUT)
+
+
+READY_STATE = "ready"
+
+
+def test_a_hidden_second_window_sends_its_form_back_to_the_first(bctx, monkeypatch):
+    from autoapply.browser import fill as fillmod
+    bctx.profile.browser.windows = 2
+    bctx.profile.browser.parallel_tabs = 2
+    warned = []
+    bctx.notifier.warn = warned.append
+    real = fillmod.check_window_visible
+
+    async def hidden_in_second(page):
+        if fillmod._window.get() > 0:
+            raise fillmod.WindowHidden("the window is minimised or hidden")
+        await real(page)
+    monkeypatch.setattr(fillmod, "check_window_visible", hidden_in_second)
+    seed(bctx, GH)
+    seed(bctx, ASHBY, company="Gamma", role="ml-ai")
+    stats = RunStats()
+    asyncio.run(fill_many(bctx, [GH, ASHBY], stats))
+    assert all(bctx.ledger.get(k).state in ("ready", "needs_input") for k in (GH, ASHBY))
+    assert stats.get("stuck", 0) == 0
+    assert len(warned) == 1 and "one window" in warned[0]
+
+
+def test_the_browser_opens_the_windows_and_places_tabs_in_them(bctx):
+    bctx.profile.browser.windows = 3
+
+    async def go():
+        async with BrowserSession(bctx) as bs:
+            assert bs.window_count == 3
+            async def win(p):
+                s = await p.context.new_cdp_session(p)
+                tid = (await s.send("Target.getTargetInfo"))["targetInfo"]["targetId"]
+                w = (await s.send("Browser.getWindowForTarget", {"targetId": tid}))["windowId"]
+                await s.detach()
+                return w
+            anchors = [await win(p) for p in bs.windows]
+            assert len(set(anchors)) == 3
+            for i in range(3):
+                assert await win(await bs.new_page(i)) == anchors[i]
+    asyncio.run(go())
